@@ -147,15 +147,26 @@ export class AriConnection {
       if (!call) return;
 
       this.log.info(`[ARI] DTMF: ${event.digit} on ${call.id}`);
+      this.callManager.broadcastEvent(call.id, "call.dtmf", { digit: event.digit });
       this.notifyWebhook("call.dtmf", { ...call, digit: event.digit });
     });
 
     ari.on("PlaybackFinished", (event: any, playback: any) => {
       this.log.info(`[ARI] PlaybackFinished: ${playback.id}`);
+      const channelId = playback.target_uri?.replace("channel:", "");
+      const call = channelId ? this.callManager.getByChannelId(channelId) : undefined;
+      if (call) {
+        this.callManager.broadcastEvent(call.id, "call.playback_finished", { playbackId: playback.id });
+      }
     });
 
     ari.on("RecordingFinished", (event: any, recording: any) => {
       this.log.info(`[ARI] RecordingFinished: ${recording.name}`);
+      const channelId = recording.target_uri?.replace("channel:", "");
+      const call = channelId ? this.callManager.getByChannelId(channelId) : undefined;
+      if (call) {
+        this.callManager.broadcastEvent(call.id, "call.recording_finished", { name: recording.name });
+      }
     });
 
     // WebSocket close = disconnected
@@ -176,7 +187,13 @@ export class AriConnection {
   async listEndpoints(): Promise<any[]> {
     this.requireConnection();
     try {
-      return await this.ari.endpoints.list();
+      const raw = await this.ari.endpoints.list();
+      return raw.map((ep: any) => ({
+        technology: ep.technology,
+        resource: ep.resource,
+        state: ep.state,
+        channel_ids: ep.channel_ids || [],
+      }));
     } catch (err: any) {
       const parsed = parseAriError(err);
       throw new AriError(`Failed to list endpoints: ${parsed.message}`, parsed.statusCode);
@@ -190,11 +207,15 @@ export class AriConnection {
   async checkEndpoint(endpoint: string): Promise<boolean> {
     this.requireConnection();
     try {
-      // endpoint format: "PJSIP/1001" or "SIP/1001"
+      // endpoint format: "PJSIP/1001", "PJSIP/number@trunk", etc.
       const parts = endpoint.split("/");
       if (parts.length < 2) return false;
       const tech = parts[0];
-      const resource = parts.slice(1).join("/");
+      let resource = parts.slice(1).join("/");
+      // For trunk dialing (e.g. "PJSIP/6596542555@sip50690132"), validate the trunk endpoint
+      if (resource.includes("@")) {
+        resource = resource.split("@")[1];
+      }
       await this.ari.endpoints.get({ tech, resource });
       return true;
     } catch {
@@ -253,6 +274,7 @@ export class AriConnection {
     channel.on("StasisStart", async (event: any, ch: any) => {
       this.log.info(`[ARI] Outbound StasisStart: ${ch.id} for call ${callId}`);
       // Channel is now in our app, ready for media operations
+      this.callManager.broadcastEvent(callId, "call.ready", {});
       this.notifyWebhook("call.ready", this.callManager.get(callId)!);
     });
 
@@ -548,7 +570,16 @@ export class AriConnection {
   async listBridges(): Promise<any[]> {
     this.requireConnection();
     try {
-      return await this.ari.bridges.list();
+      const raw = await this.ari.bridges.list();
+      return raw.map((b: any) => ({
+        id: b.id,
+        name: b.name,
+        technology: b.technology,
+        bridge_type: b.bridge_type,
+        bridge_class: b.bridge_class,
+        channels: b.channels || [],
+        createdAt: b.createdtime,
+      }));
     } catch (err: any) {
       const parsed = parseAriError(err);
       throw new AriError(`List bridges failed: ${parsed.message}`, parsed.statusCode);
@@ -561,7 +592,16 @@ export class AriConnection {
   async getBridge(bridgeId: string): Promise<any> {
     this.requireConnection();
     try {
-      return await this.ari.bridges.get({ bridgeId });
+      const b = await this.ari.bridges.get({ bridgeId });
+      return {
+        id: b.id,
+        name: b.name,
+        technology: b.technology,
+        bridge_type: b.bridge_type,
+        bridge_class: b.bridge_class,
+        channels: b.channels || [],
+        createdAt: b.createdtime,
+      };
     } catch (err: any) {
       const parsed = parseAriError(err);
       throw new AriError(`Bridge '${bridgeId}' not found: ${parsed.message}`, 404);

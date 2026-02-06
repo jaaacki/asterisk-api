@@ -131,6 +131,11 @@ export class CallManager extends EventEmitter {
 
   // ── Events ────────────────────────────────────────────────────────
 
+  /** Emit a call event for WebSocket broadcast and listeners. */
+  broadcastEvent(callId: string, type: string, data: Record<string, unknown>): void {
+    this.emitCallEvent(callId, type, data);
+  }
+
   private emitCallEvent(callId: string, type: string, data: Record<string, unknown>): void {
     const event: CallEvent = {
       type,
