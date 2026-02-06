@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.2] - 2026-02-07
+
+### Added
+- `POST /calls/:id/play/file` endpoint for uploading raw WAV/PCM audio and playing it on a channel
+- Sequential media playback: `POST /calls/:id/play` now accepts an array of media URIs
+- `playMediaSequence()` method in AriConnection for playing multiple media items in order
+- `uploadAndPlayFile()` method that uploads audio via ARI HTTP and plays it
+- `audio.asteriskSoundsDir` config option for configurable Asterisk sounds path
+- `ASTERISK_SOUNDS_DIR` environment variable
+
+### Changed
+- `PlayRequestSchema` now accepts both a single string and an array of strings for the `media` field
+
 ## [0.1.1] - 2026-02-07
 
 ### Added

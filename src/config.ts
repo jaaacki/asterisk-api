@@ -13,6 +13,10 @@ const ConfigSchema = z.object({
     host: z.string().default("0.0.0.0"),
     apiKey: z.string().optional(),
   }),
+  audio: z.object({
+    /** Base URL for uploading/managing sounds on Asterisk via ARI HTTP */
+    asteriskSoundsDir: z.string().default("/var/lib/asterisk/sounds/custom"),
+  }),
   openclaw: z.object({
     webhookUrl: z.string().url().optional(),
   }),
@@ -32,6 +36,9 @@ export function loadConfig(): Config {
       port: process.env.API_PORT,
       host: process.env.API_HOST,
       apiKey: process.env.API_KEY || undefined,
+    },
+    audio: {
+      asteriskSoundsDir: process.env.ASTERISK_SOUNDS_DIR,
     },
     openclaw: {
       webhookUrl: process.env.OPENCLAW_WEBHOOK_URL || undefined,
