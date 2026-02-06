@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.1] - 2026-02-07
+
+### Added
+- Zod request body schemas for all mutating endpoints (OriginateRequestSchema, PlayRequestSchema, RecordRequestSchema, DtmfRequestSchema)
+- Proper HTTP status codes: 400 for validation errors, 404 for not found, 503 for ARI disconnected
+- `GET /endpoints` route to list available SIP/PJSIP endpoints from Asterisk
+- `GET /` route with API overview showing all available endpoints and their payloads
+- Custom `AriError` class with HTTP status code hints
+- ARI error response parser to extract meaningful messages from raw JSON errors
+- Endpoint availability check before originate — returns 404 if endpoint does not exist
+
+### Changed
+- All ARI methods now throw `AriError` with appropriate status codes instead of generic Error
+- Error responses unified through `errorResponse()` helper for consistent JSON output
+
 ## [0.1.0] - 2026-02-07
 
 ### Added
