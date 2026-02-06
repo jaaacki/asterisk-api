@@ -1,7 +1,7 @@
 import ariClient from "ari-client";
 import type { Config } from "./config.js";
 import { CallManager } from "./call-manager.js";
-import type { CallRecord, OriginateRequest } from "./types.js";
+import type { CallRecord, OriginateRequest, BridgeRecord, TransferRequest } from "./types.js";
 import { randomUUID } from "node:crypto";
 
 /** Custom error class for ARI-specific errors with HTTP status hints. */
@@ -460,6 +460,175 @@ export class AriConnection {
     } catch (err: any) {
       const parsed = parseAriError(err);
       throw new AriError(`Send DTMF failed: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
+  // ── Bridge management ──────────────────────────────────────────────
+
+  /**
+   * Create a mixing bridge.
+   */
+  async createBridge(name?: string): Promise<BridgeRecord> {
+    this.requireConnection();
+    try {
+      const bridge = await this.ari.bridges.create({ type: "mixing", name: name || `bridge-${Date.now()}` });
+      const record: BridgeRecord = {
+        id: bridge.id,
+        name: name || bridge.name,
+        type: "mixing",
+        channelIds: [],
+        createdAt: new Date(),
+      };
+      this.callManager.createBridge(record);
+      return record;
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Create bridge failed: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
+  /**
+   * List all active bridges from ARI.
+   */
+  async listBridges(): Promise<any[]> {
+    this.requireConnection();
+    try {
+      return await this.ari.bridges.list();
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`List bridges failed: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
+  /**
+   * Get bridge details from ARI.
+   */
+  async getBridge(bridgeId: string): Promise<any> {
+    this.requireConnection();
+    try {
+      return await this.ari.bridges.get({ bridgeId });
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Bridge '${bridgeId}' not found: ${parsed.message}`, 404);
+    }
+  }
+
+  /**
+   * Destroy a bridge.
+   */
+  async destroyBridge(bridgeId: string): Promise<void> {
+    this.requireConnection();
+    try {
+      await this.ari.bridges.destroy({ bridgeId });
+      // Clear bridge association from any calls
+      for (const call of this.callManager.listActive()) {
+        if (call.bridgeId === bridgeId) {
+          this.callManager.clearBridge(call.id);
+        }
+      }
+      this.callManager.deleteBridge(bridgeId);
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Destroy bridge failed: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
+  /**
+   * Add a channel to a bridge.
+   */
+  async addChannelToBridge(bridgeId: string, callId: string): Promise<void> {
+    const call = this.callManager.get(callId);
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
+
+    try {
+      await this.ari.bridges.addChannel({ bridgeId, channel: call.channelId });
+      this.callManager.addChannelToBridge(bridgeId, call.channelId);
+      this.callManager.setBridge(callId, bridgeId);
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Add channel to bridge failed: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
+  /**
+   * Remove a channel from a bridge.
+   */
+  async removeChannelFromBridge(bridgeId: string, callId: string): Promise<void> {
+    const call = this.callManager.get(callId);
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
+
+    try {
+      await this.ari.bridges.removeChannel({ bridgeId, channel: call.channelId });
+      this.callManager.removeChannelFromBridge(bridgeId, call.channelId);
+      this.callManager.clearBridge(callId);
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Remove channel from bridge failed: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
+  /**
+   * Transfer a call by creating a bridge, originating a new call to the target,
+   * and connecting both channels in the bridge.
+   */
+  async transferCall(callId: string, request: TransferRequest): Promise<{ bridgeId: string; newCallId: string }> {
+    const call = this.callManager.get(callId);
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
+
+    // Create a mixing bridge
+    const bridge = await this.createBridge(`transfer-${callId}`);
+
+    // Add the existing channel to the bridge
+    await this.addChannelToBridge(bridge.id, callId);
+
+    // Originate the new call to the transfer target
+    const newCall = await this.originate({
+      endpoint: request.endpoint,
+      callerId: request.callerId || call.callerNumber,
+      timeout: request.timeout || 30,
+    });
+
+    // When the new call answers, add it to the bridge
+    // We set up a listener on the call manager for when it transitions to "answered"
+    const waitForAnswer = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new AriError("Transfer target did not answer within timeout", 408));
+      }, (request.timeout || 30) * 1000);
+
+      const onEvent = (event: any) => {
+        if (event.type === "call.state_changed" && event.callId === newCall.id && event.data.state === "answered") {
+          cleanup();
+          resolve();
+        }
+        if (event.type === "call.ended" && event.callId === newCall.id) {
+          cleanup();
+          reject(new AriError("Transfer target call ended before answering", 500));
+        }
+      };
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.callManager.removeListener("event", onEvent);
+      };
+
+      this.callManager.on("event", onEvent);
+    });
+
+    try {
+      await waitForAnswer;
+      // Add the new call's channel to the bridge
+      await this.addChannelToBridge(bridge.id, newCall.id);
+      return { bridgeId: bridge.id, newCallId: newCall.id };
+    } catch (err) {
+      // Clean up on failure
+      try {
+        await this.destroyBridge(bridge.id);
+      } catch { /* ignore cleanup errors */ }
+      throw err;
     }
   }
 
