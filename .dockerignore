@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+.git
+.gitignore
+*.md
+LICENSE
+.DS_Store
+Thumbs.db

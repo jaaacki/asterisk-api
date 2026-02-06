@@ -35,17 +35,11 @@ Built as the telephony backend for [OpenClaw](https://github.com/jaaacki/opencla
 
 ## Setup
 
-### 1. Clone and install
+### 1. Clone and configure
 
 ```bash
 git clone <repo-url>
 cd asterisk-api
-npm install
-```
-
-### 2. Configure environment
-
-```bash
 cp .env.example .env
 ```
 
@@ -69,7 +63,7 @@ OPENCLAW_WEBHOOK_URL=http://localhost:18789/voice/webhook
 API_KEY=
 ```
 
-### 3. Asterisk configuration
+### 2. Asterisk configuration
 
 Ensure ARI is enabled in your Asterisk instance:
 
@@ -92,9 +86,11 @@ exten => _X.,1,NoOp(Incoming call to OpenClaw Voice)
  same => n,Hangup()
 ```
 
-### 4. Run
+### 3. Run — Local
 
 ```bash
+npm install
+
 # Development (hot-reload)
 npm run dev
 
@@ -102,6 +98,45 @@ npm run dev
 npm run build
 npm start
 ```
+
+### 4. Run — Docker
+
+Docker Compose uses profiles to separate dev and prod workflows.
+
+**Production** — builds a minimal image and runs compiled JS:
+
+```bash
+docker compose --profile prod up -d
+```
+
+**Development** — mounts `src/` into the container with hot-reload via tsx:
+
+```bash
+docker compose --profile dev up
+```
+
+Edit files under `src/` on your host and the container picks up changes automatically.
+
+**Useful Docker commands:**
+
+```bash
+# View logs
+docker compose --profile prod logs -f
+
+# Stop
+docker compose --profile prod down
+
+# Rebuild after dependency changes
+docker compose --profile prod up -d --build
+
+# Health check
+docker inspect --format='{{.State.Health.Status}}' asterisk-api-asterisk-api-1
+
+# Shell into running container
+docker compose --profile prod exec asterisk-api sh
+```
+
+**Network considerations:** The container must be able to reach your Asterisk server. If Asterisk runs on the Docker host, `ARI_URL` in `.env` should use the host's LAN IP (e.g. `http://192.168.2.198:8088`), not `localhost`. On Linux you can also use `host.docker.internal` with `--add-host` or `extra_hosts` in compose.
 
 The server starts on `http://0.0.0.0:3456` by default.
 

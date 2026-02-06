@@ -1,0 +1,29 @@
+services:
+  asterisk-api:
+    build:
+      context: .
+      target: production
+    profiles: [prod]
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-3456}:${API_PORT:-3456}"
+    env_file: .env
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:${API_PORT:-3456}/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  asterisk-api-dev:
+    build:
+      context: .
+      target: deps
+    profiles: [dev]
+    ports:
+      - "${API_PORT:-3456}:${API_PORT:-3456}"
+    env_file: .env
+    volumes:
+      - ./src:/app/src:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+    command: npx tsx watch src/index.ts
