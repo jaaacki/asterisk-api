@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.4] - 2026-02-07
+
+### Added
+- `GET /recordings` to list all stored recordings from Asterisk
+- `GET /recordings/:name` to get recording metadata
+- `POST /recordings/:name/copy` to copy a stored recording `{ destinationName }`
+- `DELETE /recordings/:name?stored=true` to delete stored recordings (vs. stopping live ones)
+- Recording management methods in AriConnection: `listStoredRecordings()`, `getStoredRecording()`, `deleteStoredRecording()`, `copyStoredRecording()`
+- `copyStored()` method added to ari-client type declarations
+
+### Changed
+- Renamed `getRecording()` to `getRecordingFile()` for clarity (file download vs. metadata)
+- `DELETE /recordings/:name` now supports `?stored=true` query param to distinguish between stopping a live recording and deleting a stored one
+
 ## [0.1.3] - 2026-02-07
 
 ### Added

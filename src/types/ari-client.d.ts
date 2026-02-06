@@ -77,6 +77,7 @@ declare module "ari-client" {
     getStoredFile(params: { recordingName: string }): Promise<Buffer>;
     listStored(): Promise<any[]>;
     deleteStored(params: { recordingName: string }): Promise<void>;
+    copyStored(params: { recordingName: string; destinationRecordingName: string }): Promise<any>;
   }
 
   interface AriPlaybacksApi {
