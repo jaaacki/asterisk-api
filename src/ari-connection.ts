@@ -4,6 +4,46 @@ import { CallManager } from "./call-manager.js";
 import type { CallRecord, OriginateRequest } from "./types.js";
 import { randomUUID } from "node:crypto";
 
+/** Custom error class for ARI-specific errors with HTTP status hints. */
+export class AriError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number = 500
+  ) {
+    super(message);
+    this.name = "AriError";
+  }
+}
+
+/**
+ * Parse an ARI error response to extract a meaningful message.
+ * ari-client often throws errors with raw JSON bodies; this extracts
+ * the human-readable part.
+ */
+function parseAriError(err: any): { message: string; statusCode: number } {
+  // ari-client errors often have a statusCode on the error object
+  const statusCode: number = err.statusCode ?? err.status ?? 500;
+
+  let message = err.message ?? String(err);
+
+  // Try to extract message from JSON body embedded in the error
+  try {
+    const jsonMatch = message.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed.message) {
+        message = parsed.message;
+      } else if (parsed.error) {
+        message = parsed.error;
+      }
+    }
+  } catch {
+    // Not JSON, use original message
+  }
+
+  return { message, statusCode };
+}
+
 export class AriConnection {
   private ari: any = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -40,6 +80,13 @@ export class AriConnection {
 
   getClient(): any {
     return this.ari;
+  }
+
+  /** Throws AriError(503) if ARI is not connected. */
+  private requireConnection(): void {
+    if (!this.ari || !this.connected) {
+      throw new AriError("ARI is not connected — Asterisk may be unreachable", 503);
+    }
   }
 
   private setupEventHandlers(): void {
@@ -124,10 +171,51 @@ export class AriConnection {
   }
 
   /**
+   * List available SIP/PJSIP endpoints from Asterisk.
+   */
+  async listEndpoints(): Promise<any[]> {
+    this.requireConnection();
+    try {
+      return await this.ari.endpoints.list();
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Failed to list endpoints: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
+  /**
+   * Check whether a given endpoint is available/reachable in Asterisk.
+   * Returns true if the endpoint exists; false otherwise.
+   */
+  async checkEndpoint(endpoint: string): Promise<boolean> {
+    this.requireConnection();
+    try {
+      // endpoint format: "PJSIP/1001" or "SIP/1001"
+      const parts = endpoint.split("/");
+      if (parts.length < 2) return false;
+      const tech = parts[0];
+      const resource = parts.slice(1).join("/");
+      await this.ari.endpoints.get({ tech, resource });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Originate an outbound call. The channel enters Stasis when answered.
    */
   async originate(request: OriginateRequest): Promise<CallRecord> {
-    if (!this.ari) throw new Error("ARI not connected");
+    this.requireConnection();
+
+    // Optionally verify endpoint availability before dialing
+    const endpointAvailable = await this.checkEndpoint(request.endpoint);
+    if (!endpointAvailable) {
+      throw new AriError(
+        `Endpoint '${request.endpoint}' is not available or does not exist. Use GET /endpoints to list available endpoints.`,
+        404
+      );
+    }
 
     const callId = randomUUID();
     const channel = this.ari.Channel();
@@ -181,8 +269,9 @@ export class AriConnection {
       return this.callManager.get(callId)!;
     } catch (err: any) {
       this.callManager.updateState(callId, "failed");
-      this.callManager.end(callId, err.message);
-      throw err;
+      const parsed = parseAriError(err);
+      this.callManager.end(callId, parsed.message);
+      throw new AriError(`Originate failed: ${parsed.message}`, parsed.statusCode);
     }
   }
 
@@ -191,14 +280,20 @@ export class AriConnection {
    */
   async playMedia(callId: string, media: string): Promise<void> {
     const call = this.callManager.get(callId);
-    if (!call) throw new Error(`Call ${callId} not found`);
-    if (!this.ari) throw new Error("ARI not connected");
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
 
     const previousState = call.state;
     this.callManager.updateState(callId, "playing");
 
     const playback = this.ari.Playback();
-    await this.ari.channels.play({ channelId: call.channelId, media }, playback);
+    try {
+      await this.ari.channels.play({ channelId: call.channelId, media }, playback);
+    } catch (err: any) {
+      this.callManager.updateState(callId, previousState === "playing" ? "answered" : previousState);
+      const parsed = parseAriError(err);
+      throw new AriError(`Play failed: ${parsed.message}`, parsed.statusCode);
+    }
 
     return new Promise<void>((resolve, reject) => {
       playback.on("PlaybackFinished", () => {
@@ -212,7 +307,7 @@ export class AriConnection {
 
       playback.on("PlaybackFailed", (event: any) => {
         this.callManager.updateState(callId, previousState === "playing" ? "answered" : previousState);
-        reject(new Error(`Playback failed: ${event.reason}`));
+        reject(new AriError(`Playback failed: ${event.reason}`, 500));
       });
     });
   }
@@ -225,20 +320,25 @@ export class AriConnection {
     options: { name?: string; format?: string; maxDurationSeconds?: number; beep?: boolean }
   ): Promise<string> {
     const call = this.callManager.get(callId);
-    if (!call) throw new Error(`Call ${callId} not found`);
-    if (!this.ari) throw new Error("ARI not connected");
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
 
     const recordingName = options.name || `call-${callId}-${Date.now()}`;
 
-    await this.ari.channels.record({
-      channelId: call.channelId,
-      name: recordingName,
-      format: options.format || "wav",
-      maxDurationSeconds: options.maxDurationSeconds || 300,
-      beep: options.beep ?? false,
-      ifExists: "overwrite",
-      terminateOn: "none",
-    });
+    try {
+      await this.ari.channels.record({
+        channelId: call.channelId,
+        name: recordingName,
+        format: options.format || "wav",
+        maxDurationSeconds: options.maxDurationSeconds || 300,
+        beep: options.beep ?? false,
+        ifExists: "overwrite",
+        terminateOn: "none",
+      });
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Record failed: ${parsed.message}`, parsed.statusCode);
+    }
 
     this.callManager.addRecording(callId, recordingName);
     this.callManager.updateState(callId, "recording");
@@ -250,16 +350,26 @@ export class AriConnection {
    * Stop a live recording.
    */
   async stopRecording(recordingName: string): Promise<void> {
-    if (!this.ari) throw new Error("ARI not connected");
-    await this.ari.recordings.stop({ recordingName });
+    this.requireConnection();
+    try {
+      await this.ari.recordings.stop({ recordingName });
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Stop recording failed: ${parsed.message}`, parsed.statusCode);
+    }
   }
 
   /**
    * Get a stored recording file.
    */
   async getRecording(recordingName: string): Promise<Buffer> {
-    if (!this.ari) throw new Error("ARI not connected");
-    return await this.ari.recordings.getStoredFile({ recordingName });
+    this.requireConnection();
+    try {
+      return await this.ari.recordings.getStoredFile({ recordingName });
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Recording '${recordingName}' not found: ${parsed.message}`, 404);
+    }
   }
 
   /**
@@ -267,8 +377,8 @@ export class AriConnection {
    */
   async hangup(callId: string, reason?: string): Promise<void> {
     const call = this.callManager.get(callId);
-    if (!call) throw new Error(`Call ${callId} not found`);
-    if (!this.ari) throw new Error("ARI not connected");
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
 
     try {
       await this.ari.channels.hangup({ channelId: call.channelId, reason: reason || "normal" });
@@ -283,10 +393,15 @@ export class AriConnection {
    */
   async sendDtmf(callId: string, dtmf: string): Promise<void> {
     const call = this.callManager.get(callId);
-    if (!call) throw new Error(`Call ${callId} not found`);
-    if (!this.ari) throw new Error("ARI not connected");
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
 
-    await this.ari.channels.sendDTMF({ channelId: call.channelId, dtmf });
+    try {
+      await this.ari.channels.sendDTMF({ channelId: call.channelId, dtmf });
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Send DTMF failed: ${parsed.message}`, parsed.statusCode);
+    }
   }
 
   /**
