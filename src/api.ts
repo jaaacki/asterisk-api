@@ -14,7 +14,10 @@ const OriginateRequestSchema = z.object({
 });
 
 const PlayRequestSchema = z.object({
-  media: z.string().min(1, "media is required (e.g. 'sound:hello-world')"),
+  media: z.union([
+    z.string().min(1, "media is required (e.g. 'sound:hello-world')"),
+    z.array(z.string().min(1)).min(1, "media array must have at least one item"),
+  ]),
 });
 
 const RecordRequestSchema = z.object({
@@ -86,7 +89,8 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
         "GET  /calls/:id": "Get call details",
         "POST /calls": "Originate an outbound call { endpoint, callerId?, timeout?, variables? }",
         "DELETE /calls/:id": "Hang up a call { reason? }",
-        "POST /calls/:id/play": "Play audio on a call { media }",
+        "POST /calls/:id/play": "Play audio on a call { media } (string or array for sequential playback)",
+        "POST /calls/:id/play/file": "Upload raw WAV audio and play it (Content-Type: audio/wav, body = raw bytes)",
         "POST /calls/:id/record": "Start recording { name?, format?, maxDurationSeconds?, beep? }",
         "POST /calls/:id/dtmf": "Send DTMF tones { dtmf }",
         "DELETE /recordings/:name": "Stop a live recording",
@@ -148,18 +152,54 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
     }
   });
 
-  // ── POST /calls/:id/play — play media ─────────────────────────────
+  // ── POST /calls/:id/play — play media (single or sequence) ────────
 
   app.post("/calls/:id/play", async (req: Request, res: Response) => {
     try {
       const body = PlayRequestSchema.parse(req.body);
-      await ariConn.playMedia(req.params.id, body.media);
+      if (Array.isArray(body.media)) {
+        await ariConn.playMediaSequence(req.params.id, body.media);
+      } else {
+        await ariConn.playMedia(req.params.id, body.media);
+      }
       res.json({ status: "ok" });
     } catch (err: unknown) {
       console.error("[API] Play error:", err);
       errorResponse(res, err);
     }
   });
+
+  // ── POST /calls/:id/play/file — upload and play raw audio file ───
+
+  app.post(
+    "/calls/:id/play/file",
+    express.raw({ type: ["audio/wav", "audio/x-wav", "audio/wave", "audio/l16", "application/octet-stream"], limit: "10mb" }),
+    async (req: Request, res: Response) => {
+      try {
+        const audioBuffer = req.body as Buffer;
+        if (!audioBuffer || !Buffer.isBuffer(audioBuffer) || audioBuffer.length === 0) {
+          res.status(400).json({
+            error: "Request body must be raw audio data. Set Content-Type to audio/wav and send the file as the request body.",
+          });
+          return;
+        }
+
+        // Derive filename from Content-Disposition header or use a default
+        const disposition = req.headers["content-disposition"];
+        let filename = "upload.wav";
+        if (disposition) {
+          const match = disposition.match(/filename="?([^";]+)"?/);
+          if (match) filename = match[1];
+        }
+
+        const soundName = await ariConn.uploadAndPlayFile(req.params.id, audioBuffer, filename);
+        res.json({ status: "ok", soundName });
+      } catch (err: unknown) {
+        console.error("[API] Play file error:", err);
+        errorResponse(res, err);
+      }
+    }
+  );
 
   // ── POST /calls/:id/record — start recording ──────────────────────
 
