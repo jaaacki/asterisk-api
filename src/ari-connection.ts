@@ -419,15 +419,70 @@ export class AriConnection {
   }
 
   /**
-   * Get a stored recording file.
+   * Get a stored recording file (binary data).
    */
-  async getRecording(recordingName: string): Promise<Buffer> {
+  async getRecordingFile(recordingName: string): Promise<Buffer> {
     this.requireConnection();
     try {
       return await this.ari.recordings.getStoredFile({ recordingName });
     } catch (err: any) {
       const parsed = parseAriError(err);
+      throw new AriError(`Recording file '${recordingName}' not found: ${parsed.message}`, 404);
+    }
+  }
+
+  /**
+   * List all stored recordings.
+   */
+  async listStoredRecordings(): Promise<any[]> {
+    this.requireConnection();
+    try {
+      return await this.ari.recordings.listStored();
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`List recordings failed: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
+  /**
+   * Get stored recording metadata (not the file, just metadata).
+   */
+  async getStoredRecording(recordingName: string): Promise<any> {
+    this.requireConnection();
+    try {
+      return await this.ari.recordings.getStored({ recordingName });
+    } catch (err: any) {
+      const parsed = parseAriError(err);
       throw new AriError(`Recording '${recordingName}' not found: ${parsed.message}`, 404);
+    }
+  }
+
+  /**
+   * Delete a stored recording.
+   */
+  async deleteStoredRecording(recordingName: string): Promise<void> {
+    this.requireConnection();
+    try {
+      await this.ari.recordings.deleteStored({ recordingName });
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Delete recording '${recordingName}' failed: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
+  /**
+   * Copy a stored recording to a new name.
+   */
+  async copyStoredRecording(recordingName: string, destinationName: string): Promise<any> {
+    this.requireConnection();
+    try {
+      return await this.ari.recordings.copyStored({
+        recordingName,
+        destinationRecordingName: destinationName,
+      });
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Copy recording '${recordingName}' failed: ${parsed.message}`, parsed.statusCode);
     }
   }
 

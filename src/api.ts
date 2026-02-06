@@ -49,6 +49,10 @@ const TransferRequestSchema = z.object({
   timeout: z.number().int().min(1).max(120).optional(),
 });
 
+const CopyRecordingRequestSchema = z.object({
+  destinationName: z.string().min(1, "destinationName is required"),
+});
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /** Map an error to the appropriate HTTP status + JSON body. */
@@ -114,8 +118,11 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
         "DELETE /bridges/:id": "Destroy a bridge",
         "POST /bridges/:id/addChannel": "Add a call to a bridge { callId }",
         "POST /bridges/:id/removeChannel": "Remove a call from a bridge { callId }",
-        "DELETE /recordings/:name": "Stop a live recording",
+        "GET  /recordings": "List all stored recordings",
+        "GET  /recordings/:name": "Get recording metadata",
         "GET  /recordings/:name/file": "Download a stored recording (audio/wav)",
+        "POST /recordings/:name/copy": "Copy a stored recording { destinationName }",
+        "DELETE /recordings/:name": "Stop live recording, or delete stored (?stored=true)",
         "WS   /events": "WebSocket stream of real-time call events",
       },
     });
@@ -235,24 +242,63 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
     }
   });
 
-  // ── DELETE /recordings/:name — stop live recording ─────────────────
+  // ── Recording management routes ────────────────────────────────────
 
-  app.delete("/recordings/:name", async (req: Request, res: Response) => {
+  // GET /recordings — list all stored recordings
+  app.get("/recordings", async (_req: Request, res: Response) => {
     try {
-      await ariConn.stopRecording(req.params.name);
-      res.json({ status: "stopped" });
+      const recordings = await ariConn.listStoredRecordings();
+      res.json({ recordings });
     } catch (err: unknown) {
       errorResponse(res, err);
     }
   });
 
-  // ── GET /recordings/:name/file — download stored recording ────────
+  // GET /recordings/:name — get recording metadata
+  app.get("/recordings/:name", async (req: Request, res: Response) => {
+    try {
+      const recording = await ariConn.getStoredRecording(req.params.name);
+      res.json({ recording });
+    } catch (err: unknown) {
+      errorResponse(res, err);
+    }
+  });
 
+  // GET /recordings/:name/file — download stored recording
   app.get("/recordings/:name/file", async (req: Request, res: Response) => {
     try {
-      const data = await ariConn.getRecording(req.params.name);
+      const data = await ariConn.getRecordingFile(req.params.name);
       res.set("Content-Type", "audio/wav");
       res.send(data);
+    } catch (err: unknown) {
+      errorResponse(res, err);
+    }
+  });
+
+  // POST /recordings/:name/copy — copy a stored recording
+  app.post("/recordings/:name/copy", async (req: Request, res: Response) => {
+    try {
+      const body = CopyRecordingRequestSchema.parse(req.body);
+      const result = await ariConn.copyStoredRecording(req.params.name, body.destinationName);
+      res.status(201).json({ recording: result });
+    } catch (err: unknown) {
+      errorResponse(res, err);
+    }
+  });
+
+  // DELETE /recordings/:name — stop a live recording or delete a stored recording
+  app.delete("/recordings/:name", async (req: Request, res: Response) => {
+    try {
+      const { stored } = req.query;
+      if (stored === "true") {
+        // Delete a stored recording
+        await ariConn.deleteStoredRecording(req.params.name);
+        res.json({ status: "deleted" });
+      } else {
+        // Stop a live recording (original behavior)
+        await ariConn.stopRecording(req.params.name);
+        res.json({ status: "stopped" });
+      }
     } catch (err: unknown) {
       errorResponse(res, err);
     }
