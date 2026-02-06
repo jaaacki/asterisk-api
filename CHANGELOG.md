@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.3] - 2026-02-07
+
+### Added
+- Bridge CRUD routes: `POST /bridges`, `GET /bridges`, `GET /bridges/:id`, `DELETE /bridges/:id`
+- Bridge channel management: `POST /bridges/:id/addChannel`, `POST /bridges/:id/removeChannel`
+- `POST /calls/:id/transfer` endpoint — creates a bridge, dials a new endpoint, and connects both channels
+- `BridgeRecord` type and `TransferRequest` type in types.ts
+- Bridge tracking in CallManager: `createBridge()`, `getBridge()`, `listBridges()`, `deleteBridge()`, `addChannelToBridge()`, `removeChannelFromBridge()`
+- `clearBridge()` method on CallManager to disassociate a call from a bridge
+- Bridge events emitted on the WebSocket stream (`bridge.created`, `bridge.destroyed`)
+
+### Changed
+- CallManager `setBridge()` now also sets call state to "bridged"
+
 ## [0.1.2] - 2026-02-07
 
 ### Added

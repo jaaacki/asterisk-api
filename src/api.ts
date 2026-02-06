@@ -35,6 +35,20 @@ const HangupRequestSchema = z.object({
   reason: z.string().optional(),
 }).optional();
 
+const CreateBridgeRequestSchema = z.object({
+  name: z.string().optional(),
+}).optional();
+
+const BridgeChannelRequestSchema = z.object({
+  callId: z.string().min(1, "callId is required"),
+});
+
+const TransferRequestSchema = z.object({
+  endpoint: z.string().min(1, "endpoint is required (e.g. 'PJSIP/1001')"),
+  callerId: z.string().optional(),
+  timeout: z.number().int().min(1).max(120).optional(),
+});
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /** Map an error to the appropriate HTTP status + JSON body. */
@@ -93,6 +107,13 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
         "POST /calls/:id/play/file": "Upload raw WAV audio and play it (Content-Type: audio/wav, body = raw bytes)",
         "POST /calls/:id/record": "Start recording { name?, format?, maxDurationSeconds?, beep? }",
         "POST /calls/:id/dtmf": "Send DTMF tones { dtmf }",
+        "POST /calls/:id/transfer": "Transfer call to endpoint { endpoint, callerId?, timeout? }",
+        "POST /bridges": "Create a mixing bridge { name? }",
+        "GET  /bridges": "List all bridges",
+        "GET  /bridges/:id": "Get bridge details",
+        "DELETE /bridges/:id": "Destroy a bridge",
+        "POST /bridges/:id/addChannel": "Add a call to a bridge { callId }",
+        "POST /bridges/:id/removeChannel": "Remove a call from a bridge { callId }",
         "DELETE /recordings/:name": "Stop a live recording",
         "GET  /recordings/:name/file": "Download a stored recording (audio/wav)",
         "WS   /events": "WebSocket stream of real-time call events",
@@ -250,6 +271,19 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
     }
   });
 
+  // ── POST /calls/:id/transfer — transfer a call ─────────────────────
+
+  app.post("/calls/:id/transfer", async (req: Request, res: Response) => {
+    try {
+      const body = TransferRequestSchema.parse(req.body);
+      const result = await ariConn.transferCall(req.params.id, body);
+      res.status(201).json(result);
+    } catch (err: unknown) {
+      console.error("[API] Transfer error:", err);
+      errorResponse(res, err);
+    }
+  });
+
   // ── DELETE /calls/:id — hang up ────────────────────────────────────
 
   app.delete("/calls/:id", async (req: Request, res: Response) => {
@@ -257,6 +291,74 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
       const body = HangupRequestSchema.parse(req.body);
       await ariConn.hangup(req.params.id, body?.reason);
       res.json({ status: "hungup" });
+    } catch (err: unknown) {
+      errorResponse(res, err);
+    }
+  });
+
+  // ── Bridge routes ─────────────────────────────────────────────────
+
+  // POST /bridges — create a mixing bridge
+  app.post("/bridges", async (req: Request, res: Response) => {
+    try {
+      const body = CreateBridgeRequestSchema.parse(req.body);
+      const bridge = await ariConn.createBridge(body?.name);
+      res.status(201).json({ bridge });
+    } catch (err: unknown) {
+      console.error("[API] Create bridge error:", err);
+      errorResponse(res, err);
+    }
+  });
+
+  // GET /bridges — list bridges
+  app.get("/bridges", async (_req: Request, res: Response) => {
+    try {
+      const bridges = await ariConn.listBridges();
+      const tracked = callManager.listBridges();
+      res.json({ bridges, tracked });
+    } catch (err: unknown) {
+      errorResponse(res, err);
+    }
+  });
+
+  // GET /bridges/:id — get bridge details
+  app.get("/bridges/:id", async (req: Request, res: Response) => {
+    try {
+      const bridge = await ariConn.getBridge(req.params.id);
+      const tracked = callManager.getBridge(req.params.id);
+      res.json({ bridge, tracked });
+    } catch (err: unknown) {
+      errorResponse(res, err);
+    }
+  });
+
+  // DELETE /bridges/:id — destroy a bridge
+  app.delete("/bridges/:id", async (req: Request, res: Response) => {
+    try {
+      await ariConn.destroyBridge(req.params.id);
+      res.json({ status: "destroyed" });
+    } catch (err: unknown) {
+      errorResponse(res, err);
+    }
+  });
+
+  // POST /bridges/:id/addChannel — add a call's channel to a bridge
+  app.post("/bridges/:id/addChannel", async (req: Request, res: Response) => {
+    try {
+      const body = BridgeChannelRequestSchema.parse(req.body);
+      await ariConn.addChannelToBridge(req.params.id, body.callId);
+      res.json({ status: "ok" });
+    } catch (err: unknown) {
+      errorResponse(res, err);
+    }
+  });
+
+  // POST /bridges/:id/removeChannel — remove a call's channel from a bridge
+  app.post("/bridges/:id/removeChannel", async (req: Request, res: Response) => {
+    try {
+      const body = BridgeChannelRequestSchema.parse(req.body);
+      await ariConn.removeChannelFromBridge(req.params.id, body.callId);
+      res.json({ status: "ok" });
     } catch (err: unknown) {
       errorResponse(res, err);
     }

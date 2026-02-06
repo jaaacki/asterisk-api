@@ -47,3 +47,17 @@ export interface RecordRequest {
   maxDurationSeconds?: number;
   beep?: boolean;
 }
+
+export interface BridgeRecord {
+  id: string;
+  name?: string;
+  type: string;
+  channelIds: string[];
+  createdAt: Date;
+}
+
+export interface TransferRequest {
+  endpoint: string;
+  callerId?: string;
+  timeout?: number;
+}
