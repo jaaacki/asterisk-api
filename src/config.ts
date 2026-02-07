@@ -20,6 +20,7 @@ const ConfigSchema = z.object({
   }),
   asr: z.object({
     url: z.string().url().optional(),
+    language: z.string().default("English"),
   }),
   tts: z.object({
     url: z.string().url().optional(),
@@ -53,6 +54,7 @@ export function loadConfig(): Config {
     },
     asr: {
       url: process.env.ASR_URL,
+      language: process.env.ASR_LANGUAGE,
     },
     tts: {
       url: process.env.TTS_URL,

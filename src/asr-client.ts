@@ -17,6 +17,8 @@ export interface AsrTranscription {
 export interface AsrClientOptions {
   /** ASR WebSocket URL */
   url: string;
+  /** Language code for transcription (e.g. "en", "zh") or "auto" (default: "en") */
+  language?: string;
   /** Reconnect delay in ms (default: 2000) */
   reconnectDelay?: number;
   /** Max reconnect attempts (default: 10, 0 = infinite) */
@@ -126,6 +128,13 @@ export class AsrClient extends EventEmitter {
           reject(err);
         });
       });
+
+      // Configure language (default: "en" to avoid auto-detect flipping)
+      const language = this.options.language ?? "en";
+      if (language !== "auto") {
+        this.ws.send(JSON.stringify({ action: "config", language }));
+        this.log.info(`[AsrClient] Configured language="${language}" for call ${this.callId}`);
+      }
     } catch (err) {
       this.log.error(`[AsrClient] Failed to connect:`, err);
       throw err;
@@ -330,6 +339,7 @@ export class AsrManager extends EventEmitter {
 
   constructor(
     private asrUrl: string,
+    private language: string = "en",
     private log = console
   ) {
     super();
@@ -347,6 +357,7 @@ export class AsrManager extends EventEmitter {
       callId,
       {
         url: this.asrUrl,
+        language: this.language,
         reconnectDelay: 2000,
         maxReconnectAttempts: 10,
       },

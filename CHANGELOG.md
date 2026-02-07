@@ -1,9 +1,14 @@
 # Changelog
 
-## [0.3.4] - 2026-02-07
+## [0.3.5] - 2026-02-07
 
 ### Fixed
 - **ASR flush waits for final transcription** — `close()` now sends flush and waits for the `is_final: true` response (up to 2s safety timeout) instead of a fixed 100ms delay, preventing the last words from being lost when a call ends. Fixes #22.
+- **ASR language locking** — client sends `{"action": "config", "language": "English"}` on connect to prevent per-chunk auto-detection flipping between languages on silence/noise
+- **Inbound ringing indication** — added `channel.ring()` so callers hear a ringtone during the 3s pre-answer delay instead of silence
+
+### Added
+- `ASR_LANGUAGE` env var (default: `"English"`) — configures the language sent to the ASR service
 
 ## [0.3.3] - 2026-02-07
 
