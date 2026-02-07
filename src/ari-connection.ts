@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { isInboundAllowed } from "./allowlist.js";
 import { AudioCaptureManager } from "./audio-capture.js";
 import { AsrManager, type AsrTranscription } from "./asr-client.js";
+import { TtsClient, TtsManager, type TtsSynthesizeOptions } from "./tts-client.js";
 
 /** Custom error class for ARI-specific errors with HTTP status hints. */
 export class AriError extends Error {
@@ -53,6 +54,7 @@ export class AriConnection {
   private connected = false;
   private audioCaptureManager?: AudioCaptureManager;
   private asrManager?: AsrManager;
+  private ttsManager?: TtsManager;
 
   constructor(
     private config: Config,
@@ -89,6 +91,10 @@ export class AriConnection {
 
       // Initialize ASR manager
       this.asrManager = new AsrManager(this.config.asr.url, this.log);
+
+      // Initialize TTS manager
+      const ttsClient = new TtsClient(this.config.tts, this.log);
+      this.ttsManager = new TtsManager(ttsClient, this.log);
 
       // Forward audio capture events to call manager for WebSocket broadcast
       this.audioCaptureManager.on("capture.started", async ({ callId, info }) => {
@@ -312,6 +318,9 @@ export class AriConnection {
       this.log.info(`[ARI] StasisEnd: ${channel.id}`);
       const call = this.callManager.getByChannelId(channel.id);
       if (call && call.state !== "ended") {
+        // Cancel any in-flight TTS synthesis
+        this.ttsManager?.cancel(call.id);
+
         // Stop audio capture if active
         if (this.audioCaptureManager?.hasCapture(call.id)) {
           try {
@@ -550,6 +559,73 @@ export class AriConnection {
     }
 
     return soundName;
+  }
+
+  /**
+   * Synthesize text to speech and play the result on a call channel.
+   */
+  async speak(
+    callId: string,
+    options: TtsSynthesizeOptions
+  ): Promise<{ voice: string; language: string; durationSeconds?: number }> {
+    const call = this.callManager.get(callId);
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
+
+    if (!this.ttsManager) {
+      throw new AriError("TTS manager not initialized", 500);
+    }
+
+    const previousState = call.state;
+    this.callManager.updateState(callId, "speaking");
+    this.callManager.broadcastEvent(callId, "call.speak_started", {
+      text: options.text,
+      voice: options.voice || this.config.tts.defaultVoice,
+      language: options.language || this.config.tts.defaultLanguage,
+    });
+
+    try {
+      // Synthesize text → WAV buffer
+      const result = await this.ttsManager.synthesize(callId, options);
+
+      // Upload and play the WAV on the channel (waits for PlaybackFinished)
+      await this.uploadAndPlayFile(callId, result.audio, `tts-${Date.now()}.wav`);
+
+      this.callManager.broadcastEvent(callId, "call.speak_finished", {
+        text: options.text,
+        voice: result.voice,
+        language: result.language,
+        durationSeconds: result.durationSeconds,
+      });
+      this.notifyWebhook("call.speak_finished", {
+        ...this.callManager.get(callId),
+        text: options.text,
+        voice: result.voice,
+        language: result.language,
+        durationSeconds: result.durationSeconds,
+      });
+
+      return {
+        voice: result.voice,
+        language: result.language,
+        durationSeconds: result.durationSeconds,
+      };
+    } catch (err: any) {
+      this.callManager.broadcastEvent(callId, "call.speak_error", {
+        text: options.text,
+        error: err.message,
+      });
+
+      if (err instanceof AriError) throw err;
+      const parsed = parseAriError(err);
+      throw new AriError(`Speak failed: ${parsed.message}`, 502);
+    } finally {
+      // Restore previous state if still speaking
+      const current = this.callManager.get(callId);
+      if (current?.state === "speaking") {
+        this.callManager.updateState(callId, previousState === "speaking" ? "answered" : previousState);
+      }
+    }
   }
 
   /**
@@ -1011,6 +1087,9 @@ export class AriConnection {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+
+    // Cancel all in-flight TTS requests
+    this.ttsManager?.cancelAll();
 
     // Stop all ASR sessions
     if (this.asrManager) {
