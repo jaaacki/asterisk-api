@@ -36,6 +36,7 @@ async function main() {
   const shutdown = async () => {
     console.log("\n[Server] Shutting down...");
     await ariConn.disconnect();
+    callManager.clearAllTimers();
     server.close();
     process.exit(0);
   };
