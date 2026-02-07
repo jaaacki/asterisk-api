@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Asterisk API Allowlist",
+  "description": "Configuration for allowed inbound and outbound phone numbers",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of this allowlist"
+    },
+    "inbound": {
+      "type": "array",
+      "description": "Phone numbers allowed to call in (caller ID must match)",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]+$",
+        "description": "Phone number without '+' prefix"
+      },
+      "default": []
+    },
+    "outbound": {
+      "type": "array",
+      "description": "Phone numbers allowed to be called (destination must match)",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]+$",
+        "description": "Phone number without '+' prefix"
+      },
+      "default": []
+    }
+  },
+  "required": ["inbound", "outbound"],
+  "additionalProperties": false
+}
