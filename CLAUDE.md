@@ -54,8 +54,10 @@ CallManager is an EventEmitter that owns all call/bridge state. AriConnection mu
 
 Audio capture uses three Asterisk channels per capture session:
 1. **Snoop channel** — mirrors audio from the active call (direction: `in`)
-2. **ExternalMedia channel** — streams audio out via WebSocket
+2. **ExternalMedia channel** — streams audio out via WebSocket (`connection_type: "server"`)
 3. **Bridge** — connects Snoop to ExternalMedia
+
+Critical ordering: WebSocket client must connect to ExternalMedia BEFORE bridging (server-mode channels only enter Stasis after client connects). WebSocket URL: `ws://<host>:<port>/media/<MEDIA_WEBSOCKET_CONNECTION_ID>` with subprotocol `"media"`.
 
 AudioCapture (per-call) → AudioCaptureManager (multi-call) → AriConnection (integration) → AsrManager (speech recognition)
 

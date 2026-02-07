@@ -4,7 +4,8 @@
 
 ### Fixed
 - **ASR URL no longer hardcoded** — moved to `ASR_URL` env var via `asr.url` config field
-- **ExternalMedia Stasis race condition** — `bridge.addChannel()` now waits for `StasisStart` event (5s timeout) before bridging, preventing failures when Asterisk is slow to register the channel
+- **ExternalMedia WebSocket URL** — fixed URL from wrong `/ari/externalMedia/<id>` to correct `/media/<connectionId>` using `MEDIA_WEBSOCKET_CONNECTION_ID` from channel vars
+- **ExternalMedia Stasis race condition** — WebSocket client now connects BEFORE bridging (server-mode channels only enter Stasis after client connects); added `"media"` subprotocol
 - **Webhook URL in `.env.example`** — changed `localhost` to `host.docker.internal` so Docker containers can reach the host
 
 ### Added
