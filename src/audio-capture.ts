@@ -264,35 +264,49 @@ export class AudioCapture extends EventEmitter {
 
   /**
    * Clean up snoop, ExternalMedia channels, and WebSocket.
+   * Order matters: close WebSocket first (releases ExternalMedia channel),
+   * then destroy bridge, then hangup any remaining channels.
    */
   private async cleanup(): Promise<void> {
-    const promises: Promise<any>[] = [];
-
-    // Close audio WebSocket
+    // 1. Close the WebSocket and wait for it to fully close.
+    //    This causes Asterisk to release the ExternalMedia channel.
     if (this.audioWs) {
       this.log.info(`[AudioCapture] Closing ExternalMedia WebSocket for call ${this.callId}`);
-      try {
-        this.audioWs.close();
-      } catch (err) {
-        this.log.warn(`[AudioCapture] Failed to close WebSocket:`, err);
-      }
+      const ws = this.audioWs;
       this.audioWs = undefined;
+
+      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+        await new Promise<void>((resolve) => {
+          const timeout = setTimeout(() => {
+            this.log.warn(`[AudioCapture] WebSocket close timeout for call ${this.callId}, forcing terminate`);
+            ws.terminate();
+            resolve();
+          }, 2000);
+
+          ws.once("close", () => {
+            clearTimeout(timeout);
+            resolve();
+          });
+          ws.close();
+        });
+      }
     }
 
-    // Destroy bridge
+    // 2. Destroy bridge (removes channel associations)
     if (this.bridgeId) {
       this.log.info(`[AudioCapture] Destroying bridge: ${this.bridgeId}`);
-      promises.push(
-        this.ari.bridges.destroy({ bridgeId: this.bridgeId }).catch((err: any) => {
-          this.log.warn(`[AudioCapture] Failed to destroy bridge: ${err.message}`);
-        })
-      );
+      await this.ari.bridges.destroy({ bridgeId: this.bridgeId }).catch((err: any) => {
+        this.log.warn(`[AudioCapture] Failed to destroy bridge: ${err.message}`);
+      });
       this.bridgeId = undefined;
     }
 
+    // 3. Hangup snoop and ExternalMedia channels (may already be gone)
+    const hangups: Promise<any>[] = [];
+
     if (this.snoopChannelId) {
       this.log.info(`[AudioCapture] Cleaning up snoop channel: ${this.snoopChannelId}`);
-      promises.push(
+      hangups.push(
         this.ari.channels.hangup({ channelId: this.snoopChannelId }).catch((err: any) => {
           this.log.warn(`[AudioCapture] Failed to hangup snoop channel: ${err.message}`);
         })
@@ -302,7 +316,7 @@ export class AudioCapture extends EventEmitter {
 
     if (this.externalMediaChannelId) {
       this.log.info(`[AudioCapture] Cleaning up ExternalMedia channel: ${this.externalMediaChannelId}`);
-      promises.push(
+      hangups.push(
         this.ari.channels.hangup({ channelId: this.externalMediaChannelId }).catch((err: any) => {
           this.log.warn(`[AudioCapture] Failed to hangup ExternalMedia channel: ${err.message}`);
         })
@@ -310,7 +324,9 @@ export class AudioCapture extends EventEmitter {
       this.externalMediaChannelId = undefined;
     }
 
-    await Promise.allSettled(promises);
+    if (hangups.length > 0) {
+      await Promise.allSettled(hangups);
+    }
   }
 }
 

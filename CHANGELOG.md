@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.6] - 2026-02-07
+
+### Fixed
+- **ExternalMedia channels lingering after call hangup** — WebSocket close was non-blocking, so the ExternalMedia channel stayed alive in Asterisk even after cleanup ran. Now waits for the WebSocket `close` event (with 2s timeout + `terminate()` fallback) before destroying bridges and hanging up channels. Fixes stuck "busy" state on extensions after calls.
+- Same fix applied to `audio-playback.ts` — TTS ExternalMedia channels now clean up properly too.
+
 ## [0.3.5] - 2026-02-07
 
 ### Fixed
