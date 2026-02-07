@@ -55,52 +55,51 @@ export class TtsClient {
     private log = console
   ) {}
 
-  async synthesize(options: TtsSynthesizeOptions): Promise<TtsSynthesizeResult> {
+  async synthesize(options: TtsSynthesizeOptions, signal?: AbortSignal): Promise<TtsSynthesizeResult> {
     const voice = options.voice || this.config.defaultVoice;
     const language = options.language || this.config.defaultLanguage;
     const speed = options.speed ?? 1.0;
 
     const url = `${this.config.url}/v1/audio/speech`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+    const timeoutSignal = AbortSignal.timeout(this.config.timeoutMs);
+    // Combine external signal (from TtsManager) with internal timeout
+    const combinedSignal = signal
+      ? AbortSignal.any([signal, timeoutSignal])
+      : timeoutSignal;
 
-    try {
-      this.log.info(
-        `[TtsClient] Synthesizing "${options.text.slice(0, 80)}${options.text.length > 80 ? "..." : ""}" ` +
-        `voice=${voice} language=${language} speed=${speed}`
-      );
+    this.log.info(
+      `[TtsClient] Synthesizing "${options.text.slice(0, 80)}${options.text.length > 80 ? "..." : ""}" ` +
+      `voice=${voice} language=${language} speed=${speed}`
+    );
 
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          input: options.text,
-          voice,
-          response_format: "wav",
-          speed,
-          language,
-        }),
-        signal: controller.signal,
-      });
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input: options.text,
+        voice,
+        response_format: "wav",
+        speed,
+        language,
+      }),
+      signal: combinedSignal,
+    });
 
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
-        throw new Error(`TTS server returned ${resp.status}: ${body}`);
-      }
-
-      const arrayBuf = await resp.arrayBuffer();
-      const audio = Buffer.from(arrayBuf);
-      const durationSeconds = estimateWavDuration(audio);
-
-      this.log.info(
-        `[TtsClient] Synthesized ${audio.length} bytes` +
-        (durationSeconds !== undefined ? ` (~${durationSeconds.toFixed(1)}s)` : "")
-      );
-
-      return { audio, voice, language, durationSeconds };
-    } finally {
-      clearTimeout(timeout);
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new Error(`TTS server returned ${resp.status}: ${body}`);
     }
+
+    const arrayBuf = await resp.arrayBuffer();
+    const audio = Buffer.from(arrayBuf);
+    const durationSeconds = estimateWavDuration(audio);
+
+    this.log.info(
+      `[TtsClient] Synthesized ${audio.length} bytes` +
+      (durationSeconds !== undefined ? ` (~${durationSeconds.toFixed(1)}s)` : "")
+    );
+
+    return { audio, voice, language, durationSeconds };
   }
 }
 
@@ -124,9 +123,7 @@ export class TtsManager {
     this.inFlight.set(callId, controller);
 
     try {
-      // We use the TtsClient's own timeout; the abort controller here is for
-      // external cancellation (call hangup, shutdown).
-      const result = await this.client.synthesize(options);
+      const result = await this.client.synthesize(options, controller.signal);
       return result;
     } finally {
       // Only delete if it's still our controller (not replaced by a new request)
