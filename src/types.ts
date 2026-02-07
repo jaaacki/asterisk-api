@@ -2,6 +2,7 @@ export type CallState =
   | "initiating"
   | "ringing"
   | "answered"
+  | "ready"
   | "playing"
   | "recording"
   | "bridged"

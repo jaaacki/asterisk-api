@@ -225,6 +225,12 @@ export class AriConnection {
       // Check if we already track this channel (outbound originated)
       if (this.callManager.getByChannelId(channel.id)) return;
 
+      // Skip internal channels (snoop, external media, etc.)
+      if (channel.id.startsWith("snoop-") || channel.id.startsWith("audiocap-")) {
+        this.log.info(`[ARI] Skipping internal channel: ${channel.id}`);
+        return;
+      }
+
       // Check inbound allowlist
       if (!isInboundAllowed(callerNumber)) {
         this.log.warn(`[ARI] Inbound call from ${callerNumber} blocked by allowlist — hanging up`);
@@ -263,15 +269,32 @@ export class AriConnection {
           return;
         }
         
-        channel.answer().then(() => {
+        channel.answer().then(async () => {
           this.log.info(`[ARI] Inbound call answered: ${callId}`);
           this.callManager.updateState(callId, "answered", { answeredAt: new Date() });
           this.notifyWebhook("call.answered", this.callManager.get(callId)!);
+          
           // Play greeting sound
           const greeting = this.config.inbound.greetingSound;
-          channel.play({ media: `sound:${greeting}` }).catch((err: any) => {
+          try {
+            const playback = await channel.play({ media: `sound:${greeting}` });
+            
+            // After greeting finishes, play beep and keep call alive
+            playback.on("PlaybackFinished", async () => {
+              this.log.info(`[ARI] Greeting finished for ${callId}, keeping call alive`);
+              // Play a beep to signal ready for conversation
+              try {
+                await channel.play({ media: "sound:beep" });
+              } catch (err: any) {
+                this.log.warn(`[ARI] Failed to play beep: ${err.message}`);
+              }
+              // Start silence to keep channel in Stasis
+              this.callManager.updateState(callId, "ready");
+              this.notifyWebhook("call.ready", this.callManager.get(callId)!);
+            });
+          } catch (err: any) {
             this.log.error(`[ARI] Failed to play greeting: ${err.message}`);
-          });
+          }
         }).catch((err: any) => {
           this.log.error(`[ARI] Failed to answer inbound call: ${err.message}`);
         });
