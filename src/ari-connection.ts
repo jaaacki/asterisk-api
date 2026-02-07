@@ -100,7 +100,7 @@ export class AriConnection {
 
       // Initialize ASR manager (only if ASR URL is configured)
       if (this.config.asr.url) {
-        this.asrManager = new AsrManager(this.config.asr.url, this.log);
+        this.asrManager = new AsrManager(this.config.asr.url, this.config.asr.language, this.log);
       } else {
         this.log.warn("[ARI] ASR_URL not configured — speech recognition disabled");
       }
@@ -307,13 +307,18 @@ export class AriConnection {
       };
 
       this.callManager.create(record);
-      
+
       // Delay before answering (simulate ringing)
       const ringDelay = this.config.inbound.ringDelayMs;
       this.log.info(`[ARI] Inbound call from ${callerNumber}, ringing for ${ringDelay}ms before answer`);
-      
+
+      // Send ringing indication so the caller hears a ringtone
+      channel.ring().catch((err: any) => {
+        this.log.warn(`[ARI] Failed to send ringing indication for ${callId}: ${err.message}`);
+      });
+
       this.notifyWebhook("call.inbound", record);
-      
+
       setTimeout(() => {
         // Check if call still exists (caller might have hung up)
         const call = this.callManager.get(callId);
