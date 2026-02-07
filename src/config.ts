@@ -26,6 +26,12 @@ const ConfigSchema = z.object({
   asr: z.object({
     url: z.string().url(),
   }),
+  tts: z.object({
+    url: z.string().url(),
+    defaultVoice: z.string().default("vivian"),
+    defaultLanguage: z.string().default("English"),
+    timeoutMs: z.coerce.number().int().min(1000).default(30000),
+  }),
   openclaw: z.object({
     webhookUrl: z.string().url().optional(),
   }),
@@ -55,6 +61,12 @@ export function loadConfig(): Config {
     },
     asr: {
       url: process.env.ASR_URL,
+    },
+    tts: {
+      url: process.env.TTS_URL,
+      defaultVoice: process.env.TTS_DEFAULT_VOICE,
+      defaultLanguage: process.env.TTS_DEFAULT_LANGUAGE,
+      timeoutMs: process.env.TTS_TIMEOUT_MS,
     },
     openclaw: {
       webhookUrl: process.env.OPENCLAW_WEBHOOK_URL || undefined,

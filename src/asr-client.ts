@@ -64,10 +64,15 @@ export class AsrClient extends EventEmitter {
 
       this.ws.on("message", (data: WebSocket.Data) => {
         try {
-          // ASR sends JSON transcription responses
+          // ASR sends JSON responses
           const message = JSON.parse(data.toString());
-          
-          if (message.text !== undefined) {
+
+          if (message.status !== undefined) {
+            // Status messages: {"status": "connected", ...} or {"status": "buffer_reset"}
+            this.log.info(`[AsrClient] ASR status for call ${this.callId}: ${message.status}`);
+          } else if (message.error !== undefined) {
+            this.log.error(`[AsrClient] ASR error for call ${this.callId}: ${message.error}`);
+          } else if (message.text !== undefined) {
             const transcription: AsrTranscription = {
               text: message.text,
               is_partial: message.is_partial ?? false,
@@ -157,8 +162,8 @@ export class AsrClient extends EventEmitter {
     }
 
     try {
-      // Send text control command
-      this.ws.send(command);
+      // Send JSON control command (ASR server expects {"action": "..."})
+      this.ws.send(JSON.stringify({ action: command }));
       this.log.info(`[AsrClient] Sent control command "${command}" for call ${this.callId}`);
     } catch (err) {
       this.log.error(`[AsrClient] Failed to send control command:`, err);

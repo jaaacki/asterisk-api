@@ -4,6 +4,7 @@ export type CallState =
   | "answered"
   | "ready"
   | "playing"
+  | "speaking"
   | "recording"
   | "bridged"
   | "ended"
