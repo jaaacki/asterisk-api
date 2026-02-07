@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.3] - 2026-02-07
+
+### Fixed
+- **Removed test greeting from inbound calls** — every inbound call was playing `sound:hello-world` + `sound:beep` before reaching "ready" state; this was test scaffolding that delayed call readiness by ~1-2s. After answer, calls now go straight to "ready" and start audio capture immediately. Fixes #19.
+- **ChannelStateChange no longer duplicates "answered" on inbound calls** — the global handler now only transitions outbound calls; inbound calls manage their own state in the StasisStart handler. Fixes #20.
+
+### Removed
+- **`INBOUND_GREETING_SOUND` config** — no longer needed (no greeting played on inbound calls)
+
 ## [0.3.2] - 2026-02-07
 
 ### Fixed

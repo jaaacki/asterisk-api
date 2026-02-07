@@ -1,6 +1,6 @@
 {
   "name": "asterisk-api",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "description": "REST API bridge between OpenClaw and Asterisk/FreePBX via ARI",
   "main": "dist/index.js",

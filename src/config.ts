@@ -17,8 +17,6 @@ const ConfigSchema = z.object({
   inbound: z.object({
     /** Delay in ms before answering inbound calls (simulates ringing) */
     ringDelayMs: z.coerce.number().int().min(0).default(3000),
-    /** Default greeting sound to play after answering */
-    greetingSound: z.string().default("hello-world"),
   }),
   asr: z.object({
     url: z.string().url().optional(),
@@ -52,7 +50,6 @@ export function loadConfig(): Config {
     audio: {},
     inbound: {
       ringDelayMs: process.env.INBOUND_RING_DELAY_MS,
-      greetingSound: process.env.INBOUND_GREETING_SOUND,
     },
     asr: {
       url: process.env.ASR_URL,

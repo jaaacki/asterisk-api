@@ -326,35 +326,17 @@ export class AriConnection {
           this.log.info(`[ARI] Inbound call answered: ${callId}`);
           this.callManager.updateState(callId, "answered", { answeredAt: new Date() });
           this.notifyWebhook("call.answered", this.callManager.get(callId)!);
-          
-          // Play greeting sound
-          const greeting = this.config.inbound.greetingSound;
-          try {
-            const playback = await channel.play({ media: `sound:${greeting}` });
-            
-            // After greeting finishes, play beep and keep call alive
-            playback.on("PlaybackFinished", async () => {
-              this.log.info(`[ARI] Greeting finished for ${callId}, keeping call alive`);
-              // Play a beep to signal ready for conversation
-              try {
-                await channel.play({ media: "sound:beep" });
-              } catch (err: any) {
-                this.log.warn(`[ARI] Failed to play beep: ${err.message}`);
-              }
-              // Call is ready for conversation
-              this.callManager.updateState(callId, "ready");
-              this.notifyWebhook("call.ready", this.callManager.get(callId)!);
 
-              // Auto-start audio capture + ASR pipeline
-              try {
-                await this.startAudioCapture(callId);
-                this.log.info(`[ARI] Auto-started audio capture for call ${callId}`);
-              } catch (err: any) {
-                this.log.error(`[ARI] Failed to auto-start audio capture for call ${callId}: ${err.message}`);
-              }
-            });
+          // Call is ready for conversation
+          this.callManager.updateState(callId, "ready");
+          this.notifyWebhook("call.ready", this.callManager.get(callId)!);
+
+          // Auto-start audio capture + ASR pipeline
+          try {
+            await this.startAudioCapture(callId);
+            this.log.info(`[ARI] Auto-started audio capture for call ${callId}`);
           } catch (err: any) {
-            this.log.error(`[ARI] Failed to play greeting: ${err.message}`);
+            this.log.error(`[ARI] Failed to auto-start audio capture for call ${callId}: ${err.message}`);
           }
         }).catch((err: any) => {
           this.log.error(`[ARI] Failed to answer inbound call: ${err.message}`);
@@ -398,7 +380,9 @@ export class AriConnection {
 
       this.log.info(`[ARI] ChannelStateChange: ${channel.id} -> ${channel.state}`);
 
-      if (channel.state === "Up" && call.state === "ringing") {
+      // Only transition outbound calls via ChannelStateChange.
+      // Inbound calls manage their own ringing→answered transition in the StasisStart handler.
+      if (channel.state === "Up" && call.state === "ringing" && call.direction === "outbound") {
         this.callManager.updateState(call.id, "answered", { answeredAt: new Date() });
         this.notifyWebhook("call.answered", call);
       }
