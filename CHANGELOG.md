@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.7] - 2026-02-07
+
+### Added
+- `INBOUND_RING_DELAY_MS` config — delay before answering inbound calls (default: 3000ms)
+- `INBOUND_GREETING_SOUND` config — sound file to play after answering (default: hello-world)
+- Proper "ringing" state for inbound calls before answer
+
+### Changed
+- Inbound calls now ring for configurable delay before auto-answer (more natural UX)
+- State flow: `ringing` → (delay) → `answered` → play greeting
+- `call.inbound` webhook fires immediately, `call.answered` fires after delay
+
 ## [0.1.6] - 2026-02-07
 
 ### Added

@@ -2,9 +2,9 @@
   "$schema": "./allowlist.schema.json",
   "description": "Allowlist for inbound and outbound calls. Numbers without '+' prefix.",
   "inbound": [
-    "659654255"
+    "6596542555"
   ],
   "outbound": [
-    "659654255"
+    "6596542555"
   ]
 }

@@ -118,18 +118,43 @@ export class AriConnection {
       const record: CallRecord = {
         id: callId,
         channelId: channel.id,
-        state: "answered",
+        state: "ringing",
         direction: "inbound",
         callerNumber,
         calleeNumber: channel.dialplan?.exten || "",
         createdAt: new Date(),
-        answeredAt: new Date(),
         recordings: [],
       };
 
       this.callManager.create(record);
-      channel.answer();
+      
+      // Delay before answering (simulate ringing)
+      const ringDelay = this.config.inbound.ringDelayMs;
+      this.log.info(`[ARI] Inbound call from ${callerNumber}, ringing for ${ringDelay}ms before answer`);
+      
       this.notifyWebhook("call.inbound", record);
+      
+      setTimeout(() => {
+        // Check if call still exists (caller might have hung up)
+        const call = this.callManager.get(callId);
+        if (!call || call.state === "ended") {
+          this.log.info(`[ARI] Call ${callId} ended before answer`);
+          return;
+        }
+        
+        channel.answer().then(() => {
+          this.log.info(`[ARI] Inbound call answered: ${callId}`);
+          this.callManager.updateState(callId, "answered", { answeredAt: new Date() });
+          this.notifyWebhook("call.answered", this.callManager.get(callId)!);
+          // Play greeting sound
+          const greeting = this.config.inbound.greetingSound;
+          channel.play({ media: `sound:${greeting}` }).catch((err: any) => {
+            this.log.error(`[ARI] Failed to play greeting: ${err.message}`);
+          });
+        }).catch((err: any) => {
+          this.log.error(`[ARI] Failed to answer inbound call: ${err.message}`);
+        });
+      }, ringDelay);
     });
 
     ari.on("StasisEnd", (event: any, channel: any) => {

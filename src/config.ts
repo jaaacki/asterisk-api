@@ -17,6 +17,12 @@ const ConfigSchema = z.object({
     /** Base URL for uploading/managing sounds on Asterisk via ARI HTTP */
     asteriskSoundsDir: z.string().default("/var/lib/asterisk/sounds/custom"),
   }),
+  inbound: z.object({
+    /** Delay in ms before answering inbound calls (simulates ringing) */
+    ringDelayMs: z.coerce.number().int().min(0).default(3000),
+    /** Default greeting sound to play after answering */
+    greetingSound: z.string().default("hello-world"),
+  }),
   openclaw: z.object({
     webhookUrl: z.string().url().optional(),
   }),
@@ -39,6 +45,10 @@ export function loadConfig(): Config {
     },
     audio: {
       asteriskSoundsDir: process.env.ASTERISK_SOUNDS_DIR,
+    },
+    inbound: {
+      ringDelayMs: process.env.INBOUND_RING_DELAY_MS,
+      greetingSound: process.env.INBOUND_GREETING_SOUND,
     },
     openclaw: {
       webhookUrl: process.env.OPENCLAW_WEBHOOK_URL || undefined,
