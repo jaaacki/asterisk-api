@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.4] - 2026-02-07
+
+### Fixed
+- **ASR flush waits for final transcription** — `close()` now sends flush and waits for the `is_final: true` response (up to 2s safety timeout) instead of a fixed 100ms delay, preventing the last words from being lost when a call ends. Fixes #22.
+
 ## [0.3.3] - 2026-02-07
 
 ### Fixed
