@@ -187,6 +187,7 @@ export class AsrClient extends EventEmitter {
 
   /**
    * Close the ASR client connection.
+   * Sends a flush and waits for the final transcription response before closing.
    */
   async close(): Promise<void> {
     this.closed = true;
@@ -196,20 +197,85 @@ export class AsrClient extends EventEmitter {
       this.reconnectTimer = undefined;
     }
 
-    if (this.ws) {
-      this.log.info(`[AsrClient] Closing ASR connection for call ${this.callId}`);
-      
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.log.info(`[AsrClient] Flushing ASR before close for call ${this.callId}`);
+
       try {
-        // Send flush before closing to get final transcription
-        this.flush();
-        await new Promise((resolve) => setTimeout(resolve, 100)); // Brief delay for flush to process
+        // Wait for is_final response after flush, with safety timeout
+        await this.flushAndWait(2000);
       } catch (err) {
-        this.log.warn(`[AsrClient] Failed to flush before close:`, err);
+        this.log.warn(`[AsrClient] Flush before close failed for call ${this.callId}:`, err);
       }
 
       this.ws.close();
       this.ws = undefined;
+    } else {
+      // WebSocket already gone, just clean up
+      this.ws = undefined;
     }
+  }
+
+  /**
+   * Send flush and wait for the final transcription response.
+   * @param timeoutMs - Safety timeout in ms (default: 2000)
+   */
+  private flushAndWait(timeoutMs = 2000): Promise<void> {
+    return new Promise<void>((resolve) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        resolve();
+        return;
+      }
+
+      const timeout = setTimeout(() => {
+        this.log.warn(`[AsrClient] Flush response timeout (${timeoutMs}ms) for call ${this.callId}`);
+        cleanup();
+        resolve();
+      }, timeoutMs);
+
+      const onMessage = (data: WebSocket.Data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.is_final === true) {
+            this.log.info(`[AsrClient] Final flush response received for call ${this.callId}`);
+            // Still emit the transcription so it's captured
+            if (msg.text !== undefined) {
+              this.emit("transcription", {
+                text: msg.text,
+                is_partial: false,
+                is_final: true,
+              });
+            }
+            cleanup();
+            resolve();
+          }
+        } catch {
+          // Ignore parse errors during shutdown
+        }
+      };
+
+      const onClose = () => {
+        cleanup();
+        resolve();
+      };
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.ws?.removeListener("message", onMessage);
+        this.ws?.removeListener("close", onClose);
+      };
+
+      this.ws.on("message", onMessage);
+      this.ws.on("close", onClose);
+
+      // Send flush command
+      try {
+        this.ws.send(JSON.stringify({ action: "flush" }));
+        this.log.info(`[AsrClient] Sent flush for call ${this.callId}, waiting for response...`);
+      } catch {
+        cleanup();
+        resolve();
+      }
+    });
   }
 
   /**
