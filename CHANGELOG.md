@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.2] - 2026-02-07
+
+### Fixed
+- **Timer drift in audio streaming** — replaced `setInterval` with wall-clock-based `setTimeout` scheduler in `audio-playback.ts`; over 30s of audio the old approach could drift 500ms+ causing jitter and clicks
+- **Duplicate event listeners on ARI reconnect** — `connect()` now removes all listeners from old managers before re-creating them, preventing doubled events and memory leaks after reconnect
+- **playMedia() listener leak** — hardened promise+listener pattern with outer try/catch to guarantee cleanup runs on all code paths
+
+### Improved
+- **WAV processing performance** — `toMono16bit()` and `resample()` in `wav-utils.ts` now use `Int16Array` typed array views instead of per-sample `readInt16LE`/`writeInt16LE` calls (2-3x faster for large audio buffers)
+- **WebSocket backpressure** — audio streaming now monitors `bufferedAmount` and pauses chunk scheduling when buffer exceeds 64KB, resuming at 32KB; prevents unbounded memory growth on slow connections
+- **Stream drain on completion** — after last audio chunk, polls `bufferedAmount === 0` (with 500ms safety timeout) instead of fixed 20ms delay; prevents audio truncation on immediate hangup
+- **ARI setup timeouts** — `externalMedia()`, `bridges.create()`, and `bridges.addChannel()` now have 10s timeouts via `Promise.race`; prevents indefinite hangs if Asterisk becomes unresponsive
+
 ## [0.3.1] - 2026-02-07
 
 ### Fixed

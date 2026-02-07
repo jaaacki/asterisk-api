@@ -68,6 +68,12 @@ export class AriConnection {
   async connect(): Promise<void> {
     try {
       this.log.info(`[ARI] Connecting to ${this.config.ari.url}...`);
+
+      // Remove all listeners from old managers before re-creating (prevents duplicates on reconnect)
+      this.audioCaptureManager?.removeAllListeners();
+      this.audioPlaybackManager?.removeAllListeners();
+      this.asrManager?.removeAllListeners();
+
       this.ari = await ariClient.connect(
         this.config.ari.url,
         this.config.ari.username,
@@ -704,57 +710,69 @@ export class AriConnection {
       throw new AriError(`Play failed: ${parsed.message}`, parsed.statusCode);
     }
 
-    return new Promise<void>((resolve, reject) => {
-      let settled = false;
+    // Wrap promise + listeners so cleanup always runs, even on unexpected errors
+    let cleanupFn: (() => void) | undefined;
 
-      const cleanup = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(safetyTimeout);
-        playback.removeListener("PlaybackFinished", onFinished);
-        playback.removeListener("PlaybackFailed", onFailed);
-        this.callManager.removeListener("event", onCallEvent);
-      };
+    try {
+      return await new Promise<void>((resolve, reject) => {
+        let settled = false;
 
-      const restoreState = () => {
-        const current = this.callManager.get(callId);
-        if (current?.state === "playing") {
-          this.callManager.updateState(callId, previousState === "playing" ? "answered" : previousState);
-        }
-      };
+        const cleanup = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(safetyTimeout);
+          playback.removeListener("PlaybackFinished", onFinished);
+          playback.removeListener("PlaybackFailed", onFailed);
+          this.callManager.removeListener("event", onCallEvent);
+        };
 
-      const onFinished = () => {
-        cleanup();
-        restoreState();
-        resolve();
-      };
+        // Expose cleanup to outer try/catch for safety
+        cleanupFn = cleanup;
 
-      const onFailed = (event: any) => {
-        cleanup();
-        restoreState();
-        reject(new AriError(`Playback failed: ${event.reason}`, 500));
-      };
+        const restoreState = () => {
+          const current = this.callManager.get(callId);
+          if (current?.state === "playing") {
+            this.callManager.updateState(callId, previousState === "playing" ? "answered" : previousState);
+          }
+        };
 
-      // If the call ends during playback, resolve (channel gone, nothing to play)
-      const onCallEvent = (event: any) => {
-        if (event.type === "call.ended" && event.callId === callId) {
+        const onFinished = () => {
           cleanup();
           restoreState();
           resolve();
-        }
-      };
+        };
 
-      // Safety timeout to avoid hanging forever (30s)
-      const safetyTimeout = setTimeout(() => {
-        cleanup();
-        restoreState();
-        reject(new AriError("Playback timed out (30s safety limit)", 504));
-      }, 30_000);
+        const onFailed = (event: any) => {
+          cleanup();
+          restoreState();
+          reject(new AriError(`Playback failed: ${event.reason}`, 500));
+        };
 
-      playback.once("PlaybackFinished", onFinished);
-      playback.once("PlaybackFailed", onFailed);
-      this.callManager.on("event", onCallEvent);
-    });
+        // If the call ends during playback, resolve (channel gone, nothing to play)
+        const onCallEvent = (event: any) => {
+          if (event.type === "call.ended" && event.callId === callId) {
+            cleanup();
+            restoreState();
+            resolve();
+          }
+        };
+
+        // Safety timeout to avoid hanging forever (30s)
+        const safetyTimeout = setTimeout(() => {
+          cleanup();
+          restoreState();
+          reject(new AriError("Playback timed out (30s safety limit)", 504));
+        }, 30_000);
+
+        playback.once("PlaybackFinished", onFinished);
+        playback.once("PlaybackFailed", onFailed);
+        this.callManager.on("event", onCallEvent);
+      });
+    } catch (err) {
+      // Ensure listeners are cleaned up even if the promise rejects unexpectedly
+      cleanupFn?.();
+      throw err;
+    }
   }
 
   /**

@@ -15,6 +15,31 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 
+/** Timeout for ARI setup calls (externalMedia, bridge create, addChannel). */
+const ARI_SETUP_TIMEOUT_MS = 10_000;
+
+/** WebSocket backpressure high-water mark (pause sending). */
+const WS_BACKPRESSURE_HIGH = 64 * 1024;
+
+/** WebSocket backpressure low-water mark (resume sending). */
+const WS_BACKPRESSURE_LOW = 32 * 1024;
+
+/** Max wait time for WebSocket buffer to drain after last chunk. */
+const WS_DRAIN_TIMEOUT_MS = 500;
+
+/**
+ * Wrap a promise with a timeout. Rejects with an Error if the timeout fires first.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 export interface AudioPlaybackOptions {
   /** Asterisk slin format (e.g. "slin16", "slin24") */
   format?: string;
@@ -31,7 +56,7 @@ export class AudioPlayback extends EventEmitter {
   private audioWs?: WebSocket;
   private active = false;
   private streaming = false;
-  private streamTimer?: ReturnType<typeof setInterval>;
+  private streamTimer?: ReturnType<typeof setTimeout>;
   private cancelled = false;
 
   constructor(
@@ -61,15 +86,19 @@ export class AudioPlayback extends EventEmitter {
     try {
       // Step 1: Create ExternalMedia channel (server mode — Asterisk waits for WS client)
       const externalMediaId = `ttsplay-${randomUUID()}`;
-      const externalMediaChannel = await this.ari.channels.externalMedia({
-        channelId: externalMediaId,
-        app: "openclaw-voice",
-        format,
-        transport: "websocket",
-        encapsulation: "none",
-        connection_type: "server",
-        external_host: "",
-      });
+      const externalMediaChannel: any = await withTimeout(
+        this.ari.channels.externalMedia({
+          channelId: externalMediaId,
+          app: "openclaw-voice",
+          format,
+          transport: "websocket",
+          encapsulation: "none",
+          connection_type: "server",
+          external_host: "",
+        }),
+        ARI_SETUP_TIMEOUT_MS,
+        "externalMedia create",
+      );
 
       this.externalMediaChannelId = externalMediaChannel.id;
       const wsConnectionId = externalMediaChannel.channelvars?.MEDIA_WEBSOCKET_CONNECTION_ID;
@@ -83,18 +112,26 @@ export class AudioPlayback extends EventEmitter {
       await this.connectWebSocket(wsConnectionId);
 
       // Step 3: Create mixing bridge
-      const bridge = await this.ari.bridges.create({
-        type: "mixing",
-        name: `ttsplay-bridge-${this.callId}`,
-      });
+      const bridge: any = await withTimeout(
+        this.ari.bridges.create({
+          type: "mixing",
+          name: `ttsplay-bridge-${this.callId}`,
+        }),
+        ARI_SETUP_TIMEOUT_MS,
+        "bridge create",
+      );
       this.bridgeId = bridge.id;
       this.log.info(`[AudioPlayback] Created bridge: ${bridge.id}`);
 
       // Step 4: Add both call channel and ExternalMedia to bridge
-      await this.ari.bridges.addChannel({
-        bridgeId: bridge.id,
-        channel: [this.channelId, this.externalMediaChannelId],
-      });
+      await withTimeout(
+        this.ari.bridges.addChannel({
+          bridgeId: bridge.id,
+          channel: [this.channelId, this.externalMediaChannelId],
+        }),
+        ARI_SETUP_TIMEOUT_MS,
+        "bridge addChannel",
+      );
 
       this.log.info(`[AudioPlayback] Bridged call and ExternalMedia channels`);
       this.active = true;
@@ -108,6 +145,7 @@ export class AudioPlayback extends EventEmitter {
 
   /**
    * Stream raw PCM data into the call in real-time (~20ms chunks).
+   * Uses wall-clock-based scheduling to prevent timer drift over long streams.
    * Returns a Promise that resolves when all audio has been sent.
    */
   async streamAudio(pcmData: Buffer, sampleRate: number): Promise<void> {
@@ -128,29 +166,29 @@ export class AudioPlayback extends EventEmitter {
       `[AudioPlayback] Streaming ${pcmData.length} bytes (${totalChunks} chunks × ${chunkMs}ms) for call ${this.callId}`
     );
 
+    const startTime = Date.now();
+
     return new Promise<void>((resolve, reject) => {
       let chunkIndex = 0;
 
-      const sendChunk = () => {
+      const scheduleNext = () => {
         if (this.cancelled) {
           this.streaming = false;
+          this.streamTimer = undefined;
           resolve();
           return;
         }
 
         if (chunkIndex >= totalChunks) {
-          // All chunks sent — wait one extra chunk period for drain
-          if (this.streamTimer) {
-            clearInterval(this.streamTimer);
-            this.streamTimer = undefined;
-          }
-          setTimeout(() => {
-            this.streaming = false;
-            resolve();
-          }, chunkMs);
+          // All chunks sent — wait for WebSocket buffer to drain
+          this.streamTimer = undefined;
+          this.waitForDrain()
+            .then(() => { this.streaming = false; resolve(); })
+            .catch(() => { this.streaming = false; resolve(); });
           return;
         }
 
+        // Send the current chunk
         const start = chunkIndex * chunkBytes;
         const end = Math.min(start + chunkBytes, pcmData.length);
         const chunk = pcmData.subarray(start, end);
@@ -159,31 +197,79 @@ export class AudioPlayback extends EventEmitter {
           if (this.audioWs && this.audioWs.readyState === WebSocket.OPEN) {
             this.audioWs.send(chunk);
           } else {
-            // WebSocket closed mid-stream
-            if (this.streamTimer) {
-              clearInterval(this.streamTimer);
-              this.streamTimer = undefined;
-            }
             this.streaming = false;
+            this.streamTimer = undefined;
             resolve();
             return;
           }
         } catch (err: any) {
-          if (this.streamTimer) {
-            clearInterval(this.streamTimer);
-            this.streamTimer = undefined;
-          }
           this.streaming = false;
+          this.streamTimer = undefined;
           reject(err);
           return;
         }
 
         chunkIndex++;
+
+        // Check WebSocket backpressure before scheduling next chunk
+        if (this.audioWs && this.audioWs.bufferedAmount > WS_BACKPRESSURE_HIGH) {
+          this.waitForBackpressure().then(scheduleNext).catch(() => {
+            this.streaming = false;
+            this.streamTimer = undefined;
+            resolve();
+          });
+          return;
+        }
+
+        // Wall-clock scheduling: compute delay based on when next chunk *should* send
+        const targetTime = startTime + chunkIndex * chunkMs;
+        const delay = Math.max(0, targetTime - Date.now());
+        this.streamTimer = setTimeout(scheduleNext, delay);
       };
 
-      // Send first chunk immediately, then pace at 20ms intervals
-      sendChunk();
-      this.streamTimer = setInterval(sendChunk, chunkMs);
+      // Send first chunk immediately, then schedule the rest
+      scheduleNext();
+    });
+  }
+
+  /**
+   * Wait until WebSocket bufferedAmount drops below low-water mark.
+   */
+  private waitForBackpressure(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const check = () => {
+        if (this.cancelled || !this.audioWs || this.audioWs.readyState !== WebSocket.OPEN) {
+          resolve();
+          return;
+        }
+        if (this.audioWs.bufferedAmount <= WS_BACKPRESSURE_LOW) {
+          resolve();
+          return;
+        }
+        setTimeout(check, 5);
+      };
+      check();
+    });
+  }
+
+  /**
+   * Wait for WebSocket buffer to fully drain after last chunk, with safety timeout.
+   */
+  private waitForDrain(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const deadline = Date.now() + WS_DRAIN_TIMEOUT_MS;
+      const check = () => {
+        if (!this.audioWs || this.audioWs.readyState !== WebSocket.OPEN) {
+          resolve();
+          return;
+        }
+        if (this.audioWs.bufferedAmount === 0 || Date.now() >= deadline) {
+          resolve();
+          return;
+        }
+        setTimeout(check, 5);
+      };
+      check();
     });
   }
 
@@ -197,7 +283,7 @@ export class AudioPlayback extends EventEmitter {
     this.cancelled = true;
 
     if (this.streamTimer) {
-      clearInterval(this.streamTimer);
+      clearTimeout(this.streamTimer);
       this.streamTimer = undefined;
     }
 
