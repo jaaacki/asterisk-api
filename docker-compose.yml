@@ -1,5 +1,10 @@
+networks:
+  asterisk-api-net:
+    name: asterisk-api-net
+
 services:
   asterisk-api:
+    container_name: asterisk-api
     build:
       context: .
       target: production
@@ -8,6 +13,8 @@ services:
     ports:
       - "${API_PORT:-3456}:${API_PORT:-3456}"
     env_file: .env
+    networks:
+      - asterisk-api-net
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:${API_PORT:-3456}/health"]
       interval: 30s
@@ -16,6 +23,7 @@ services:
       retries: 3
 
   asterisk-api-dev:
+    container_name: asterisk-api-dev
     build:
       context: .
       target: deps
@@ -23,7 +31,10 @@ services:
     ports:
       - "${API_PORT:-3456}:${API_PORT:-3456}"
     env_file: .env
+    networks:
+      - asterisk-api-net
     volumes:
       - ./src:/app/src:ro
       - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./allowlist.json:/app/allowlist.json:ro
     command: npx tsx watch src/index.ts
