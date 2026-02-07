@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.5] - 2026-02-07
+
+### Added
+- `allowlist.json` configuration file for inbound/outbound phone number filtering
+- `allowlist.schema.json` JSON Schema for allowlist validation
+- `src/allowlist.ts` module with:
+  - `loadAllowlist()` — load allowlist from JSON file
+  - `watchAllowlist()` — auto-reload on file changes
+  - `isOutboundAllowed(endpoint)` — check if outbound call is permitted
+  - `isInboundAllowed(callerId)` — check if inbound caller is permitted
+  - `normalizeNumber()` — strip non-digit characters
+  - `extractNumberFromEndpoint()` — extract phone number from SIP endpoint string
+- Allowlist loaded on server startup with hot-reload support
+
+### Notes
+- Empty allowlist arrays = allow all (open mode)
+- Numbers stored without '+' prefix (e.g., "659654255" not "+659654255")
+
 ## [0.1.4] - 2026-02-07
 
 ### Added

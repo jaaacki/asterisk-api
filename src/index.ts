@@ -4,9 +4,14 @@ import { CallManager } from "./call-manager.js";
 import { AriConnection } from "./ari-connection.js";
 import { createApi } from "./api.js";
 import { attachWebSocketServer } from "./ws-server.js";
+import { loadAllowlist, watchAllowlist } from "./allowlist.js";
 
 async function main() {
   const config = loadConfig();
+
+  // Load allowlist for inbound/outbound call filtering
+  loadAllowlist();
+  watchAllowlist();
   const callManager = new CallManager();
   const ariConn = new AriConnection(config, callManager);
 
