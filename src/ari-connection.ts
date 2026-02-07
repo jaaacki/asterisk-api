@@ -5,6 +5,7 @@ import type { CallRecord, OriginateRequest, BridgeRecord, TransferRequest, Audio
 import { randomUUID } from "node:crypto";
 import { isInboundAllowed } from "./allowlist.js";
 import { AudioCaptureManager } from "./audio-capture.js";
+import { AsrManager, type AsrTranscription } from "./asr-client.js";
 
 /** Custom error class for ARI-specific errors with HTTP status hints. */
 export class AriError extends Error {
@@ -51,6 +52,7 @@ export class AriConnection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connected = false;
   private audioCaptureManager?: AudioCaptureManager;
+  private asrManager?: AsrManager;
 
   constructor(
     private config: Config,
@@ -67,42 +69,121 @@ export class AriConnection {
         this.config.ari.password
       );
 
-      // Initialize audio capture manager
-      this.audioCaptureManager = new AudioCaptureManager(this.ari, {
-        format: "slin16", // PCM 16-bit, 16kHz
-        sampleRate: 16000,
-        transport: "websocket",
-        encapsulation: "none",
-        spyDirection: "in", // Capture incoming audio from caller
-      }, this.log);
+      // Initialize audio capture manager with ARI WebSocket details
+      this.audioCaptureManager = new AudioCaptureManager(
+        this.ari,
+        {
+          format: "slin16", // PCM 16-bit, 16kHz
+          sampleRate: 16000,
+          transport: "websocket",
+          encapsulation: "none",
+          spyDirection: "in", // Capture incoming audio from caller
+        },
+        this.log,
+        this.config.ari.url, // ARI HTTP URL (will be converted to WS in audio-capture.ts)
+        {
+          username: this.config.ari.username,
+          password: this.config.ari.password,
+        }
+      );
+
+      // Initialize ASR manager
+      const asrUrl = "ws://192.168.2.198:8100/ws/transcribe";
+      this.asrManager = new AsrManager(asrUrl, this.log);
 
       // Forward audio capture events to call manager for WebSocket broadcast
-      this.audioCaptureManager.on("capture.started", ({ callId, info }) => {
+      this.audioCaptureManager.on("capture.started", async ({ callId, info }) => {
         this.log.info(`[ARI] Audio capture started for call ${callId}`);
         this.callManager.broadcastEvent(callId, "call.audio_capture_started", info);
+
+        // Start ASR session when audio capture starts
+        if (this.asrManager) {
+          try {
+            this.log.info(`[ARI] Starting ASR session for call ${callId}`);
+            await this.asrManager.startSession(callId);
+          } catch (err) {
+            this.log.error(`[ARI] Failed to start ASR session for call ${callId}:`, err);
+            this.callManager.broadcastEvent(callId, "call.audio_capture_error", {
+              error: `Failed to start ASR: ${err}`,
+            });
+          }
+        }
       });
 
-      this.audioCaptureManager.on("capture.stopped", ({ callId }) => {
+      this.audioCaptureManager.on("capture.stopped", async ({ callId }) => {
         this.log.info(`[ARI] Audio capture stopped for call ${callId}`);
         this.callManager.broadcastEvent(callId, "call.audio_capture_stopped", {});
+
+        // End ASR session when audio capture stops
+        if (this.asrManager) {
+          try {
+            await this.asrManager.endSession(callId);
+          } catch (err) {
+            this.log.warn(`[ARI] Failed to end ASR session for call ${callId}:`, err);
+          }
+        }
       });
 
       this.audioCaptureManager.on("capture.frame", (frame) => {
-        // Emit audio frames to WebSocket clients
+        // Emit audio frames to WebSocket clients (base64-encoded for JSON)
         this.callManager.broadcastEvent(frame.callId, "call.audio_frame", {
           timestamp: frame.timestamp,
           format: frame.format,
           sampleRate: frame.sampleRate,
           channels: frame.channels,
           sampleCount: frame.sampleCount,
-          // Note: we send base64-encoded audio data for JSON transmission
           data: frame.data.toString("base64"),
         });
+
+        // Send audio frame to ASR service (binary PCM)
+        if (this.asrManager) {
+          const asrClient = this.asrManager.getClient(frame.callId);
+          if (asrClient && asrClient.isConnected()) {
+            asrClient.sendAudioFrame(frame.data);
+          }
+        }
       });
 
       this.audioCaptureManager.on("capture.error", ({ callId, error }) => {
         this.log.error(`[ARI] Audio capture error for call ${callId}:`, error);
         this.callManager.broadcastEvent(callId, "call.audio_capture_error", { error: String(error) });
+      });
+
+      // Forward ASR transcription events to WebSocket clients
+      this.asrManager.on("transcription", ({ callId, transcription }) => {
+        this.log.info(
+          `[ARI] Transcription for call ${callId}: "${transcription.text}" ` +
+          `(partial: ${transcription.is_partial}, final: ${transcription.is_final})`
+        );
+
+        this.callManager.broadcastEvent(callId, "call.transcription", {
+          text: transcription.text,
+          is_partial: transcription.is_partial,
+          is_final: transcription.is_final,
+        });
+
+        // Also notify OpenClaw webhook for final transcriptions
+        if (transcription.is_final) {
+          const call = this.callManager.get(callId);
+          if (call) {
+            this.notifyWebhook("call.transcription", {
+              ...call,
+              transcription: transcription.text,
+            });
+          }
+        }
+      });
+
+      this.asrManager.on("session.connected", ({ callId }) => {
+        this.log.info(`[ARI] ASR session connected for call ${callId}`);
+      });
+
+      this.asrManager.on("session.disconnected", ({ callId }) => {
+        this.log.warn(`[ARI] ASR session disconnected for call ${callId}`);
+      });
+
+      this.asrManager.on("session.error", ({ callId, error }) => {
+        this.log.error(`[ARI] ASR session error for call ${callId}:`, error);
       });
 
       this.setupEventHandlers();
@@ -899,6 +980,15 @@ export class AriConnection {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+
+    // Stop all ASR sessions
+    if (this.asrManager) {
+      try {
+        await this.asrManager.endAllSessions();
+      } catch (err) {
+        this.log.warn("[ARI] Failed to stop ASR sessions on disconnect:", err);
+      }
     }
 
     // Stop all audio captures

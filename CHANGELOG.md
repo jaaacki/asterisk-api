@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.2.1] - 2026-02-07
+
+### Added
+- **ASR (Automatic Speech Recognition) integration**
+  - `AsrClient` class for managing WebSocket connections to ASR service
+  - `AsrManager` class for managing multiple ASR sessions across calls
+  - Real-time audio streaming to ASR service at `ws://192.168.2.198:8100/ws/transcribe`
+  - Automatic ASR session lifecycle tied to audio capture (start/stop)
+  - ASR reconnection logic with configurable retry attempts
+- **Complete ExternalMedia WebSocket audio streaming**
+  - Full implementation of ExternalMedia WebSocket connection to Asterisk
+  - Binary audio frame reception from Asterisk ARI WebSocket
+  - Audio frame emission to both WebSocket clients and ASR service
+- **New WebSocket event: `call.transcription`**
+  - Emitted for each transcription result (partial and final)
+  - Payload: `{ text, is_partial, is_final }`
+  - Final transcriptions also sent to OpenClaw webhook
+- **ASR control commands**
+  - `flush` - flush buffered audio and get final transcription
+  - `reset` - reset ASR session state
+
+### Changed
+- `AudioCaptureManager` now accepts ARI WebSocket URL and credentials for ExternalMedia connection
+- `AudioCapture` now connects to Asterisk's ExternalMedia WebSocket endpoint
+- Audio frames are sent to both WebSocket clients (base64) and ASR service (binary PCM)
+- Audio capture cleanup now includes WebSocket closure and bridge destruction
+
+### Technical Details
+- ASR protocol: send binary PCM 16-bit 16kHz mono, receive JSON `{text, is_partial, is_final}`
+- ExternalMedia WebSocket URL format: `ws://<host>:<port>/ari/externalMedia/<channelId>?api_key=<user>:<pass>`
+- ASR sessions automatically start when audio capture begins
+- ASR sessions automatically end when audio capture stops or call ends
+- Automatic ASR reconnection on WebSocket failures (max 10 attempts by default)
+
+### Notes
+- This completes the audio → ASR → transcription pipeline started in v0.2.0
+- ASR service must be running at `ws://192.168.2.198:8100/ws/transcribe`
+- Audio frames flow: Call → Snoop → Bridge → ExternalMedia → WebSocket → Node.js → ASR
+
 ## [0.2.0] - 2026-02-07
 
 ### Added

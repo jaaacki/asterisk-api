@@ -9,6 +9,7 @@
 
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import WebSocket from "ws";
 import type { AudioCaptureConfig, AudioCaptureInfo, AudioFrame } from "./types.js";
 
 export interface AudioCaptureOptions {
@@ -22,6 +23,10 @@ export interface AudioCaptureOptions {
   encapsulation?: "rtp" | "audiosocket" | "none";
   /** Spy direction (default: in - capture incoming audio from caller) */
   spyDirection?: "none" | "both" | "out" | "in";
+  /** ARI WebSocket URL for ExternalMedia connection */
+  ariWsUrl?: string;
+  /** ARI credentials for WebSocket authentication */
+  ariAuth?: { username: string; password: string };
 }
 
 /**
@@ -31,6 +36,8 @@ export class AudioCapture extends EventEmitter {
   private snoopChannelId?: string;
   private externalMediaChannelId?: string;
   private active = false;
+  private audioWs?: WebSocket;
+  private bridgeId?: string;
 
   constructor(
     private callId: string,
@@ -104,6 +111,7 @@ export class AudioCapture extends EventEmitter {
         name: `audiocap-bridge-${this.callId}`,
       });
 
+      this.bridgeId = bridge.id;
       this.log.info(`[AudioCapture] Created bridge: ${bridge.id}`);
 
       // Add both channels to the bridge
@@ -113,6 +121,9 @@ export class AudioCapture extends EventEmitter {
       });
 
       this.log.info(`[AudioCapture] Bridged snoop and ExternalMedia channels`);
+
+      // Step 4: Connect to ExternalMedia WebSocket to receive audio frames
+      await this.connectToExternalMedia(externalMediaId, format, sampleRate);
 
       this.active = true;
 
@@ -125,11 +136,6 @@ export class AudioCapture extends EventEmitter {
         startedAt: new Date(),
       };
 
-      // In a full implementation, you would:
-      // 1. Connect to the Asterisk WebSocket endpoint for the ExternalMedia channel
-      // 2. Receive audio frames from the WebSocket
-      // 3. Process and emit them as AudioFrame events
-      // For now, we'll emit a placeholder event
       this.emit("started", captureInfo);
 
       return captureInfo;
@@ -162,10 +168,118 @@ export class AudioCapture extends EventEmitter {
   }
 
   /**
-   * Clean up snoop and ExternalMedia channels.
+   * Connect to Asterisk's ExternalMedia WebSocket to receive audio frames.
+   */
+  private async connectToExternalMedia(
+    externalMediaId: string,
+    format: string,
+    sampleRate: number
+  ): Promise<void> {
+    if (!this.options.ariWsUrl || !this.options.ariAuth) {
+      this.log.warn(
+        `[AudioCapture] No ARI WebSocket URL or auth provided, skipping audio frame streaming for call ${this.callId}`
+      );
+      return;
+    }
+
+    // Build WebSocket URL for ExternalMedia channel
+    // Format: ws://<host>:<port>/ari/events?app=<app>&api_key=<username>:<password>
+    // For ExternalMedia, we connect to the channel's dedicated WebSocket endpoint
+    const wsUrl = this.options.ariWsUrl.replace(/^http/, "ws");
+    const auth = `${this.options.ariAuth.username}:${this.options.ariAuth.password}`;
+    const url = `${wsUrl}/ari/externalMedia/${externalMediaId}?api_key=${auth}`;
+
+    this.log.info(`[AudioCapture] Connecting to ExternalMedia WebSocket: ${url.replace(auth, "***")}`);
+
+    try {
+      this.audioWs = new WebSocket(url);
+
+      this.audioWs.on("open", () => {
+        this.log.info(`[AudioCapture] Connected to ExternalMedia WebSocket for call ${this.callId}`);
+      });
+
+      this.audioWs.on("message", (data: Buffer | string) => {
+        // ExternalMedia sends binary audio frames (raw PCM)
+        if (Buffer.isBuffer(data)) {
+          const audioFrame: AudioFrame = {
+            callId: this.callId,
+            timestamp: Date.now(),
+            data,
+            format,
+            sampleRate,
+            channels: 1, // Mono
+            sampleCount: data.length / 2, // 16-bit samples = 2 bytes each
+          };
+
+          // Emit frame event for processing
+          this.emit("frame", audioFrame);
+        } else {
+          // Might be control messages or JSON
+          this.log.debug(`[AudioCapture] Received non-binary message: ${data.toString().substring(0, 100)}`);
+        }
+      });
+
+      this.audioWs.on("error", (err) => {
+        this.log.error(`[AudioCapture] ExternalMedia WebSocket error for call ${this.callId}:`, err);
+        this.emit("error", err);
+      });
+
+      this.audioWs.on("close", (code, reason) => {
+        this.log.info(
+          `[AudioCapture] ExternalMedia WebSocket closed for call ${this.callId} ` +
+          `(code: ${code}, reason: ${reason.toString()})`
+        );
+      });
+
+      // Wait for connection to establish
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("ExternalMedia WebSocket connection timeout"));
+        }, 5000);
+
+        this.audioWs!.once("open", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+
+        this.audioWs!.once("error", (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+      });
+    } catch (err) {
+      this.log.error(`[AudioCapture] Failed to connect to ExternalMedia WebSocket:`, err);
+      throw err;
+    }
+  }
+
+  /**
+   * Clean up snoop, ExternalMedia channels, and WebSocket.
    */
   private async cleanup(): Promise<void> {
     const promises: Promise<any>[] = [];
+
+    // Close audio WebSocket
+    if (this.audioWs) {
+      this.log.info(`[AudioCapture] Closing ExternalMedia WebSocket for call ${this.callId}`);
+      try {
+        this.audioWs.close();
+      } catch (err) {
+        this.log.warn(`[AudioCapture] Failed to close WebSocket:`, err);
+      }
+      this.audioWs = undefined;
+    }
+
+    // Destroy bridge
+    if (this.bridgeId) {
+      this.log.info(`[AudioCapture] Destroying bridge: ${this.bridgeId}`);
+      promises.push(
+        this.ari.bridges.destroy({ bridgeId: this.bridgeId }).catch((err: any) => {
+          this.log.warn(`[AudioCapture] Failed to destroy bridge: ${err.message}`);
+        })
+      );
+      this.bridgeId = undefined;
+    }
 
     if (this.snoopChannelId) {
       this.log.info(`[AudioCapture] Cleaning up snoop channel: ${this.snoopChannelId}`);
@@ -200,7 +314,9 @@ export class AudioCaptureManager extends EventEmitter {
   constructor(
     private ari: any,
     private defaultOptions: AudioCaptureOptions = {},
-    private log = console
+    private log = console,
+    private ariWsUrl?: string,
+    private ariAuth?: { username: string; password: string }
   ) {
     super();
   }
@@ -217,7 +333,12 @@ export class AudioCaptureManager extends EventEmitter {
       throw new Error(`Audio capture already exists for call ${callId}`);
     }
 
-    const mergedOptions = { ...this.defaultOptions, ...options };
+    const mergedOptions = {
+      ...this.defaultOptions,
+      ...options,
+      ariWsUrl: this.ariWsUrl,
+      ariAuth: this.ariAuth,
+    };
     const capture = new AudioCapture(callId, channelId, this.ari, mergedOptions, this.log);
 
     // Forward events from individual captures
