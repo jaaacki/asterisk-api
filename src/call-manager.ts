@@ -7,6 +7,7 @@ import type { CallRecord, CallState, CallEvent, BridgeRecord } from "./types.js"
 export class CallManager extends EventEmitter {
   private calls = new Map<string, CallRecord>();
   private bridges = new Map<string, BridgeRecord>();
+  private cleanupTimers = new Map<string, NodeJS.Timeout>();
 
   // ── Call management ───────────────────────────────────────────────
 
@@ -82,7 +83,19 @@ export class CallManager extends EventEmitter {
     this.emitCallEvent(callId, "call.ended", { cause });
 
     // Clean up after 5 minutes
-    setTimeout(() => this.calls.delete(callId), 5 * 60 * 1000);
+    const timer = setTimeout(() => {
+      this.calls.delete(callId);
+      this.cleanupTimers.delete(callId);
+    }, 5 * 60 * 1000);
+    this.cleanupTimers.set(callId, timer);
+  }
+
+  /** Clear all pending cleanup timers (for graceful shutdown). */
+  clearAllTimers(): void {
+    for (const timer of this.cleanupTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.cleanupTimers.clear();
   }
 
   // ── Bridge management ─────────────────────────────────────────────

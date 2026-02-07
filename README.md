@@ -8,6 +8,8 @@ Built as the telephony backend for [OpenClaw](https://github.com/jaaacki/opencla
 
 - **Call control** — originate, answer, hang up, transfer calls
 - **Media playback** — play built-in sounds, sequential playlists, or upload raw WAV files
+- **Text-to-speech** — synthesize and stream speech into calls via ExternalMedia WebSocket (Qwen3-TTS, optional)
+- **Speech recognition** — real-time audio capture and ASR transcription pipeline (optional)
 - **Recording** — start/stop call recording, list, download, copy, and delete stored recordings
 - **DTMF** — send DTMF tones on active calls
 - **Bridges** — create mixing bridges to connect multiple call legs (conferencing, transfers)
@@ -58,6 +60,14 @@ API_HOST=0.0.0.0
 
 # Webhook callback URL (optional, where to forward call events)
 OPENCLAW_WEBHOOK_URL=http://localhost:18789/voice/webhook
+
+# ASR — speech recognition (optional, omit to disable)
+ASR_URL=ws://192.168.2.198:8100/ws/transcribe
+
+# TTS — text-to-speech (optional, omit to disable; /speak returns 501)
+TTS_URL=http://192.168.2.198:8101
+TTS_DEFAULT_VOICE=vivian
+TTS_DEFAULT_LANGUAGE=English
 
 # API key for securing this API (optional, leave empty to disable)
 API_KEY=
@@ -167,6 +177,7 @@ Visit `GET /` on a running instance for a live endpoint listing.
 | `DELETE` | `/calls/:id` | Hang up a call |
 | `POST` | `/calls/:id/play` | Play audio (single sound or sequential playlist) |
 | `POST` | `/calls/:id/play/file` | Upload and play a raw WAV file |
+| `POST` | `/calls/:id/speak` | Synthesize text-to-speech and play on call |
 | `POST` | `/calls/:id/record` | Start recording |
 | `POST` | `/calls/:id/dtmf` | Send DTMF tones |
 | `POST` | `/calls/:id/transfer` | Transfer call to another endpoint |
@@ -209,7 +220,7 @@ On connect, the WebSocket sends a `snapshot` message with all active calls. Subs
 }
 ```
 
-Event types: `call.created`, `call.state_changed`, `call.ended`, `bridge.created`, `bridge.destroyed`
+Event types: `call.created`, `call.state_changed`, `call.ended`, `call.dtmf`, `call.playback_finished`, `call.playback_stream_started`, `call.playback_stream_finished`, `call.playback_stream_error`, `call.recording_finished`, `call.speak_started`, `call.speak_finished`, `call.speak_error`, `call.transcription`, `call.audio_capture_started`, `call.audio_capture_stopped`, `call.audio_frame`, `bridge.created`, `bridge.destroyed`
 
 ## Usage Examples
 
@@ -235,6 +246,14 @@ Sequential playback:
 curl -X POST http://localhost:3456/calls/<call-id>/play \
   -H "Content-Type: application/json" \
   -d '{"media": ["sound:hello-world", "sound:goodbye"]}'
+```
+
+### Speak text on a call (TTS)
+
+```bash
+curl -X POST http://localhost:3456/calls/<call-id>/speak \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello, how can I help you today?", "voice": "vivian"}'
 ```
 
 ### Start recording
@@ -279,6 +298,12 @@ src/
 ├── ari-connection.ts   # ARI client wrapper — call control, media, bridges, recordings
 ├── call-manager.ts     # In-memory call/bridge state and event emitter
 ├── ws-server.ts        # WebSocket server broadcasting call events
+├── allowlist.ts        # Phone number allowlist with hot-reload from allowlist.json
+├── audio-capture.ts    # Per-call audio capture: Snoop → ExternalMedia → Bridge → WS
+├── audio-playback.ts   # Per-call audio playback: TTS → WS → ExternalMedia → Bridge → Call
+├── wav-utils.ts        # WAV parser, PCM extraction, resampling, slin format mapping
+├── asr-client.ts       # WebSocket client to ASR service for speech recognition
+├── tts-client.ts       # TTS HTTP client (Qwen3-TTS, OpenAI-compatible API)
 ├── types.ts            # TypeScript interfaces (CallRecord, BridgeRecord, etc.)
 └── types/
     └── ari-client.d.ts # Type declarations for ari-client

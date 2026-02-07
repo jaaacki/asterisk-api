@@ -32,6 +32,13 @@ const DtmfRequestSchema = z.object({
   dtmf: z.string().min(1, "dtmf is required").regex(/^[0-9A-D*#]+$/i, "dtmf must contain valid DTMF characters (0-9, A-D, *, #)"),
 });
 
+const SpeakRequestSchema = z.object({
+  text: z.string().min(1, "text is required").max(5000, "text must be 5000 characters or fewer"),
+  voice: z.string().optional(),
+  language: z.string().optional(),
+  speed: z.number().min(0.25).max(4.0).optional(),
+});
+
 const HangupRequestSchema = z.object({
   reason: z.string().optional(),
 }).optional();
@@ -111,6 +118,7 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
         "POST /calls": "Originate an outbound call { endpoint, callerId?, timeout?, variables? }",
         "DELETE /calls/:id": "Hang up a call { reason? }",
         "POST /calls/:id/play": "Play audio on a call { media } (string or array for sequential playback)",
+        "POST /calls/:id/speak": "Synthesize text-to-speech and play on call { text, voice?, language?, speed? }",
         "POST /calls/:id/play/file": "Upload raw WAV audio and play it (Content-Type: audio/wav, body = raw bytes)",
         "POST /calls/:id/record": "Start recording { name?, format?, maxDurationSeconds?, beep? }",
         "POST /calls/:id/dtmf": "Send DTMF tones { dtmf }",
@@ -268,6 +276,25 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
       }
     }
   );
+
+  // ── POST /calls/:id/speak — TTS synthesis + playback ───────────────
+
+  app.post("/calls/:id/speak", async (req: Request, res: Response) => {
+    try {
+      const body = SpeakRequestSchema.parse(req.body);
+      const result = await ariConn.speak(req.params.id, body);
+      res.json({
+        status: "ok",
+        text: body.text,
+        voice: result.voice,
+        language: result.language,
+        durationSeconds: result.durationSeconds,
+      });
+    } catch (err: unknown) {
+      console.error("[API] Speak error:", err);
+      errorResponse(res, err);
+    }
+  });
 
   // ── POST /calls/:id/record — start recording ──────────────────────
 

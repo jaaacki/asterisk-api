@@ -90,7 +90,7 @@ export class AudioCapture extends EventEmitter {
       // will wait for a WebSocket connection.
       
       const externalMediaId = `audiocap-${randomUUID()}`;
-      
+
       // For WebSocket server mode (Asterisk waits for us to connect)
       const externalMediaChannel = await this.ari.channels.externalMedia({
         channelId: externalMediaId,
@@ -103,9 +103,18 @@ export class AudioCapture extends EventEmitter {
       });
 
       this.externalMediaChannelId = externalMediaChannel.id;
-      this.log.info(`[AudioCapture] Created ExternalMedia channel: ${this.externalMediaChannelId}`);
+      const wsConnectionId = externalMediaChannel.channelvars?.MEDIA_WEBSOCKET_CONNECTION_ID;
+      this.log.info(
+        `[AudioCapture] Created ExternalMedia channel: ${this.externalMediaChannelId}` +
+        (wsConnectionId ? `, wsConnectionId: ${wsConnectionId}` : "")
+      );
 
-      // Step 3: Create a bridge and connect snoop → ExternalMedia
+      // Step 3: Connect to ExternalMedia WebSocket BEFORE bridging.
+      // Server-mode ExternalMedia channels only enter Stasis once
+      // the WebSocket client connects — bridging will fail without this.
+      await this.connectToExternalMedia(wsConnectionId, format, sampleRate);
+
+      // Step 4: Create a bridge and connect snoop → ExternalMedia
       const bridge = await this.ari.bridges.create({
         type: "mixing",
         name: `audiocap-bridge-${this.callId}`,
@@ -121,9 +130,6 @@ export class AudioCapture extends EventEmitter {
       });
 
       this.log.info(`[AudioCapture] Bridged snoop and ExternalMedia channels`);
-
-      // Step 4: Connect to ExternalMedia WebSocket to receive audio frames
-      await this.connectToExternalMedia(externalMediaId, format, sampleRate);
 
       this.active = true;
 
@@ -169,37 +175,39 @@ export class AudioCapture extends EventEmitter {
 
   /**
    * Connect to Asterisk's ExternalMedia WebSocket to receive audio frames.
+   * For server-mode channels, uses /media/<connectionId> path.
    */
   private async connectToExternalMedia(
-    externalMediaId: string,
+    wsConnectionId: string | undefined,
     format: string,
     sampleRate: number
   ): Promise<void> {
-    if (!this.options.ariWsUrl || !this.options.ariAuth) {
+    if (!this.options.ariWsUrl) {
       this.log.warn(
-        `[AudioCapture] No ARI WebSocket URL or auth provided, skipping audio frame streaming for call ${this.callId}`
+        `[AudioCapture] No ARI WebSocket URL provided, skipping audio frame streaming for call ${this.callId}`
       );
       return;
     }
 
-    // Build WebSocket URL for ExternalMedia channel
-    // Format: ws://<host>:<port>/ari/events?app=<app>&api_key=<username>:<password>
-    // For ExternalMedia, we connect to the channel's dedicated WebSocket endpoint
-    const wsUrl = this.options.ariWsUrl.replace(/^http/, "ws");
-    const auth = `${this.options.ariAuth.username}:${this.options.ariAuth.password}`;
-    const url = `${wsUrl}/ari/externalMedia/${externalMediaId}?api_key=${auth}`;
+    if (!wsConnectionId) {
+      throw new Error("ExternalMedia channel did not return MEDIA_WEBSOCKET_CONNECTION_ID");
+    }
 
-    this.log.info(`[AudioCapture] Connecting to ExternalMedia WebSocket: ${url.replace(auth, "***")}`);
+    // Build WebSocket URL: ws://<host>:<port>/media/<connectionId>
+    const wsUrl = this.options.ariWsUrl.replace(/^http/, "ws");
+    const url = `${wsUrl}/media/${wsConnectionId}`;
+
+    this.log.info(`[AudioCapture] Connecting to ExternalMedia WebSocket: ${url}`);
 
     try {
-      this.audioWs = new WebSocket(url);
+      this.audioWs = new WebSocket(url, ["media"]);
 
       this.audioWs.on("open", () => {
         this.log.info(`[AudioCapture] Connected to ExternalMedia WebSocket for call ${this.callId}`);
       });
 
       this.audioWs.on("message", (data: Buffer | string) => {
-        // ExternalMedia sends binary audio frames (raw PCM)
+        // ExternalMedia sends binary audio frames (raw PCM) and text control messages
         if (Buffer.isBuffer(data)) {
           const audioFrame: AudioFrame = {
             callId: this.callId,
@@ -214,8 +222,9 @@ export class AudioCapture extends EventEmitter {
           // Emit frame event for processing
           this.emit("frame", audioFrame);
         } else {
-          // Might be control messages or JSON
-          this.log.debug(`[AudioCapture] Received non-binary message: ${data.toString().substring(0, 100)}`);
+          // Control messages: MEDIA_START, MEDIA_XOFF, MEDIA_XON, etc.
+          const msg = data.toString();
+          this.log.info(`[AudioCapture] Control message for call ${this.callId}: ${msg.substring(0, 200)}`);
         }
       });
 

@@ -45,6 +45,7 @@ HTTP Client → api.ts (Express + Zod validation + API key auth)
 - **`allowlist.ts`** — Phone number filtering with hot-reload from `allowlist.json`, empty = allow all
 - **`audio-capture.ts`** — Per-call audio pipeline: Snoop channel → ExternalMedia → Bridge → WebSocket (PCM 16-bit 16kHz mono)
 - **`asr-client.ts`** — WebSocket client to ASR service, sends PCM audio, receives JSON transcriptions, auto-reconnect
+- **`tts-client.ts`** — HTTP client to TTS service (Qwen3-TTS, OpenAI-compatible), synthesize text → WAV audio, per-call cancellation
 
 ### State Management Pattern
 
@@ -54,8 +55,10 @@ CallManager is an EventEmitter that owns all call/bridge state. AriConnection mu
 
 Audio capture uses three Asterisk channels per capture session:
 1. **Snoop channel** — mirrors audio from the active call (direction: `in`)
-2. **ExternalMedia channel** — streams audio out via WebSocket
+2. **ExternalMedia channel** — streams audio out via WebSocket (`connection_type: "server"`)
 3. **Bridge** — connects Snoop to ExternalMedia
+
+Critical ordering: WebSocket client must connect to ExternalMedia BEFORE bridging (server-mode channels only enter Stasis after client connects). WebSocket URL: `ws://<host>:<port>/media/<MEDIA_WEBSOCKET_CONNECTION_ID>` with subprotocol `"media"`.
 
 AudioCapture (per-call) → AudioCaptureManager (multi-call) → AriConnection (integration) → AsrManager (speech recognition)
 
@@ -71,7 +74,9 @@ AudioCapture (per-call) → AudioCaptureManager (multi-call) → AriConnection (
 
 Copy `.env.example` to `.env`. Key variables: `ARI_URL`, `ARI_USERNAME`, `ARI_PASSWORD`, `ARI_APP`, `API_PORT`, `API_KEY`, `OPENCLAW_WEBHOOK_URL`.
 
-The ASR service URL is currently hardcoded in `ari-connection.ts` (`ws://192.168.2.198:8100/ws/transcribe`).
+The ASR service URL is configured via `ASR_URL` env var (e.g., `ws://192.168.2.198:8100/ws/transcribe`). Optional — if omitted, speech recognition is disabled.
+
+The TTS service URL is configured via `TTS_URL` env var (e.g., `http://192.168.2.198:8101`). Optional — if omitted, TTS is disabled and `POST /calls/:id/speak` returns 501. Additional TTS env vars: `TTS_DEFAULT_VOICE` (default: vivian), `TTS_DEFAULT_LANGUAGE` (default: English), `TTS_TIMEOUT_MS` (default: 30000).
 
 ## Asterisk/FreePBX Context
 

@@ -13,15 +13,21 @@ const ConfigSchema = z.object({
     host: z.string().default("0.0.0.0"),
     apiKey: z.string().optional(),
   }),
-  audio: z.object({
-    /** Base URL for uploading/managing sounds on Asterisk via ARI HTTP */
-    asteriskSoundsDir: z.string().default("/var/lib/asterisk/sounds/custom"),
-  }),
+  audio: z.object({}),
   inbound: z.object({
     /** Delay in ms before answering inbound calls (simulates ringing) */
     ringDelayMs: z.coerce.number().int().min(0).default(3000),
     /** Default greeting sound to play after answering */
     greetingSound: z.string().default("hello-world"),
+  }),
+  asr: z.object({
+    url: z.string().url().optional(),
+  }),
+  tts: z.object({
+    url: z.string().url().optional(),
+    defaultVoice: z.string().default("vivian"),
+    defaultLanguage: z.string().default("English"),
+    timeoutMs: z.coerce.number().int().min(1000).default(30000),
   }),
   openclaw: z.object({
     webhookUrl: z.string().url().optional(),
@@ -43,12 +49,19 @@ export function loadConfig(): Config {
       host: process.env.API_HOST,
       apiKey: process.env.API_KEY || undefined,
     },
-    audio: {
-      asteriskSoundsDir: process.env.ASTERISK_SOUNDS_DIR,
-    },
+    audio: {},
     inbound: {
       ringDelayMs: process.env.INBOUND_RING_DELAY_MS,
       greetingSound: process.env.INBOUND_GREETING_SOUND,
+    },
+    asr: {
+      url: process.env.ASR_URL,
+    },
+    tts: {
+      url: process.env.TTS_URL,
+      defaultVoice: process.env.TTS_DEFAULT_VOICE,
+      defaultLanguage: process.env.TTS_DEFAULT_LANGUAGE,
+      timeoutMs: process.env.TTS_TIMEOUT_MS,
     },
     openclaw: {
       webhookUrl: process.env.OPENCLAW_WEBHOOK_URL || undefined,

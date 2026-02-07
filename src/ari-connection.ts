@@ -5,7 +5,10 @@ import type { CallRecord, OriginateRequest, BridgeRecord, TransferRequest, Audio
 import { randomUUID } from "node:crypto";
 import { isInboundAllowed } from "./allowlist.js";
 import { AudioCaptureManager } from "./audio-capture.js";
+import { AudioPlaybackManager } from "./audio-playback.js";
 import { AsrManager, type AsrTranscription } from "./asr-client.js";
+import { TtsClient, TtsManager, type TtsSynthesizeOptions } from "./tts-client.js";
+import { parseWav, toMono16bit, slinFormatName, hasExactSlinRate, resample } from "./wav-utils.js";
 
 /** Custom error class for ARI-specific errors with HTTP status hints. */
 export class AriError extends Error {
@@ -52,7 +55,9 @@ export class AriConnection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connected = false;
   private audioCaptureManager?: AudioCaptureManager;
+  private audioPlaybackManager?: AudioPlaybackManager;
   private asrManager?: AsrManager;
+  private ttsManager?: TtsManager;
 
   constructor(
     private config: Config,
@@ -63,6 +68,12 @@ export class AriConnection {
   async connect(): Promise<void> {
     try {
       this.log.info(`[ARI] Connecting to ${this.config.ari.url}...`);
+
+      // Remove all listeners from old managers before re-creating (prevents duplicates on reconnect)
+      this.audioCaptureManager?.removeAllListeners();
+      this.audioPlaybackManager?.removeAllListeners();
+      this.asrManager?.removeAllListeners();
+
       this.ari = await ariClient.connect(
         this.config.ari.url,
         this.config.ari.username,
@@ -87,9 +98,49 @@ export class AriConnection {
         }
       );
 
-      // Initialize ASR manager
-      const asrUrl = "ws://192.168.2.198:8100/ws/transcribe";
-      this.asrManager = new AsrManager(asrUrl, this.log);
+      // Initialize ASR manager (only if ASR URL is configured)
+      if (this.config.asr.url) {
+        this.asrManager = new AsrManager(this.config.asr.url, this.log);
+      } else {
+        this.log.warn("[ARI] ASR_URL not configured — speech recognition disabled");
+      }
+
+      // Initialize TTS manager (only if TTS URL is configured)
+      if (this.config.tts.url) {
+        const ttsClient = new TtsClient({
+          url: this.config.tts.url,
+          defaultVoice: this.config.tts.defaultVoice,
+          defaultLanguage: this.config.tts.defaultLanguage,
+          timeoutMs: this.config.tts.timeoutMs,
+        }, this.log);
+        this.ttsManager = new TtsManager(ttsClient, this.log);
+      } else {
+        this.log.warn("[ARI] TTS_URL not configured — text-to-speech disabled");
+      }
+
+      // Initialize audio playback manager for streaming TTS into calls
+      this.audioPlaybackManager = new AudioPlaybackManager(
+        this.ari,
+        this.log,
+        this.config.ari.url,
+        { username: this.config.ari.username, password: this.config.ari.password }
+      );
+
+      // Forward playback events to call manager for WebSocket broadcast
+      this.audioPlaybackManager.on("playback.started", ({ callId }) => {
+        this.log.info(`[ARI] Streaming playback started for call ${callId}`);
+        this.callManager.broadcastEvent(callId, "call.playback_stream_started", {});
+      });
+
+      this.audioPlaybackManager.on("playback.finished", ({ callId }) => {
+        this.log.info(`[ARI] Streaming playback finished for call ${callId}`);
+        this.callManager.broadcastEvent(callId, "call.playback_stream_finished", {});
+      });
+
+      this.audioPlaybackManager.on("playback.error", ({ callId, error }) => {
+        this.log.error(`[ARI] Streaming playback error for call ${callId}:`, error);
+        this.callManager.broadcastEvent(callId, "call.playback_stream_error", { error: String(error) });
+      });
 
       // Forward audio capture events to call manager for WebSocket broadcast
       this.audioCaptureManager.on("capture.started", async ({ callId, info }) => {
@@ -150,41 +201,43 @@ export class AriConnection {
       });
 
       // Forward ASR transcription events to WebSocket clients
-      this.asrManager.on("transcription", ({ callId, transcription }) => {
-        this.log.info(
-          `[ARI] Transcription for call ${callId}: "${transcription.text}" ` +
-          `(partial: ${transcription.is_partial}, final: ${transcription.is_final})`
-        );
+      if (this.asrManager) {
+        this.asrManager.on("transcription", ({ callId, transcription }) => {
+          this.log.info(
+            `[ARI] Transcription for call ${callId}: "${transcription.text}" ` +
+            `(partial: ${transcription.is_partial}, final: ${transcription.is_final})`
+          );
 
-        this.callManager.broadcastEvent(callId, "call.transcription", {
-          text: transcription.text,
-          is_partial: transcription.is_partial,
-          is_final: transcription.is_final,
+          this.callManager.broadcastEvent(callId, "call.transcription", {
+            text: transcription.text,
+            is_partial: transcription.is_partial,
+            is_final: transcription.is_final,
+          });
+
+          // Also notify OpenClaw webhook for final transcriptions
+          if (transcription.is_final) {
+            const call = this.callManager.get(callId);
+            if (call) {
+              this.notifyWebhook("call.transcription", {
+                ...call,
+                transcription: transcription.text,
+              });
+            }
+          }
         });
 
-        // Also notify OpenClaw webhook for final transcriptions
-        if (transcription.is_final) {
-          const call = this.callManager.get(callId);
-          if (call) {
-            this.notifyWebhook("call.transcription", {
-              ...call,
-              transcription: transcription.text,
-            });
-          }
-        }
-      });
+        this.asrManager.on("session.connected", ({ callId }) => {
+          this.log.info(`[ARI] ASR session connected for call ${callId}`);
+        });
 
-      this.asrManager.on("session.connected", ({ callId }) => {
-        this.log.info(`[ARI] ASR session connected for call ${callId}`);
-      });
+        this.asrManager.on("session.disconnected", ({ callId }) => {
+          this.log.warn(`[ARI] ASR session disconnected for call ${callId}`);
+        });
 
-      this.asrManager.on("session.disconnected", ({ callId }) => {
-        this.log.warn(`[ARI] ASR session disconnected for call ${callId}`);
-      });
-
-      this.asrManager.on("session.error", ({ callId, error }) => {
-        this.log.error(`[ARI] ASR session error for call ${callId}:`, error);
-      });
+        this.asrManager.on("session.error", ({ callId, error }) => {
+          this.log.error(`[ARI] ASR session error for call ${callId}:`, error);
+        });
+      }
 
       this.setupEventHandlers();
       this.ari.start(this.config.ari.app);
@@ -225,8 +278,8 @@ export class AriConnection {
       // Check if we already track this channel (outbound originated)
       if (this.callManager.getByChannelId(channel.id)) return;
 
-      // Skip internal channels (snoop, external media, etc.)
-      if (channel.id.startsWith("snoop-") || channel.id.startsWith("audiocap-")) {
+      // Skip internal channels (snoop, external media for capture/playback)
+      if (channel.id.startsWith("snoop-") || channel.id.startsWith("audiocap-") || channel.id.startsWith("ttsplay-")) {
         this.log.info(`[ARI] Skipping internal channel: ${channel.id}`);
         return;
       }
@@ -288,9 +341,17 @@ export class AriConnection {
               } catch (err: any) {
                 this.log.warn(`[ARI] Failed to play beep: ${err.message}`);
               }
-              // Start silence to keep channel in Stasis
+              // Call is ready for conversation
               this.callManager.updateState(callId, "ready");
               this.notifyWebhook("call.ready", this.callManager.get(callId)!);
+
+              // Auto-start audio capture + ASR pipeline
+              try {
+                await this.startAudioCapture(callId);
+                this.log.info(`[ARI] Auto-started audio capture for call ${callId}`);
+              } catch (err: any) {
+                this.log.error(`[ARI] Failed to auto-start audio capture for call ${callId}: ${err.message}`);
+              }
             });
           } catch (err: any) {
             this.log.error(`[ARI] Failed to play greeting: ${err.message}`);
@@ -305,6 +366,18 @@ export class AriConnection {
       this.log.info(`[ARI] StasisEnd: ${channel.id}`);
       const call = this.callManager.getByChannelId(channel.id);
       if (call && call.state !== "ended") {
+        // Cancel any in-flight TTS synthesis
+        this.ttsManager?.cancel(call.id);
+
+        // Cancel streaming playback if active
+        if (this.audioPlaybackManager?.hasPlayback(call.id)) {
+          try {
+            await this.audioPlaybackManager.cancelPlayback(call.id);
+          } catch (err) {
+            this.log.warn(`[ARI] Failed to cancel playback on StasisEnd: ${err}`);
+          }
+        }
+
         // Stop audio capture if active
         if (this.audioCaptureManager?.hasCapture(call.id)) {
           try {
@@ -496,53 +569,125 @@ export class AriConnection {
   }
 
   /**
-   * Upload a raw audio file buffer via ARI's HTTP sounds API and play it on the channel.
-   * The file is stored as a custom sound on Asterisk and played via `sound:` URI.
+   * Stream audio into a call via ExternalMedia WebSocket.
+   * Parses the WAV buffer, extracts PCM, creates an ExternalMedia channel,
+   * and streams audio in real-time. No files written anywhere.
    */
   async uploadAndPlayFile(callId: string, audioBuffer: Buffer, filename: string): Promise<string> {
     const call = this.callManager.get(callId);
     if (!call) throw new AriError(`Call ${callId} not found`, 404);
     this.requireConnection();
 
-    // Derive a sanitized sound name from the filename (strip extension)
-    const soundName = `custom-upload-${Date.now()}-${filename.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+    if (!this.audioPlaybackManager) {
+      throw new AriError("Audio playback manager not initialized", 500);
+    }
 
-    // Upload the audio file via ARI HTTP PUT /sounds/{soundName}
-    // ari-client does not have a built-in upload method, so we use the raw HTTP API
-    const ariUrl = this.config.ari.url;
-    const auth = Buffer.from(`${this.config.ari.username}:${this.config.ari.password}`).toString("base64");
+    // Parse WAV → raw PCM
+    const wavInfo = parseWav(audioBuffer);
+    const pcm = toMono16bit(wavInfo);
 
-    const uploadUrl = `${ariUrl}/ari/sounds/${encodeURIComponent(soundName)}`;
-    const resp = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Authorization": `Basic ${auth}`,
-        "Content-Type": "audio/wav",
-      },
-      body: new Uint8Array(audioBuffer),
+    // Determine Asterisk slin format; resample if no exact match
+    let pcmData = pcm.data;
+    let sampleRate = pcm.sampleRate;
+
+    if (!hasExactSlinRate(sampleRate)) {
+      this.log.info(`[ARI] Resampling from ${sampleRate}Hz to 16000Hz (no exact slin match)`);
+      pcmData = resample(pcmData, sampleRate, 16000);
+      sampleRate = 16000;
+    }
+
+    const format = slinFormatName(sampleRate);
+    this.log.info(
+      `[ARI] Streaming audio for call ${callId}: ${pcmData.length} bytes, ` +
+      `${sampleRate}Hz, format=${format}, duration=${pcm.durationSeconds.toFixed(1)}s`
+    );
+
+    // Start playback session (creates ExternalMedia + bridge)
+    const playback = await this.audioPlaybackManager.startPlayback(
+      callId, call.channelId, { format, sampleRate }
+    );
+
+    try {
+      // Stream PCM at real-time pace
+      await playback.streamAudio(pcmData, sampleRate);
+    } finally {
+      // Always tear down the playback infrastructure
+      await this.audioPlaybackManager.stopPlayback(callId);
+    }
+
+    return `streamed-${Date.now()}`;
+  }
+
+  /**
+   * Synthesize text to speech and play the result on a call channel.
+   */
+  async speak(
+    callId: string,
+    options: TtsSynthesizeOptions
+  ): Promise<{ voice: string; language: string; durationSeconds?: number }> {
+    const call = this.callManager.get(callId);
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
+
+    if (!this.ttsManager) {
+      throw new AriError("TTS not configured — set TTS_URL environment variable", 501);
+    }
+
+    const previousState = call.state;
+    this.callManager.updateState(callId, "speaking");
+    this.callManager.broadcastEvent(callId, "call.speak_started", {
+      text: options.text,
+      voice: options.voice || this.config.tts.defaultVoice,
+      language: options.language || this.config.tts.defaultLanguage,
     });
 
-    if (!resp.ok) {
-      // Asterisk ARI doesn't support direct sound upload via REST;
-      // fallback: write the file to the sounds directory if accessible, or simply
-      // play via recording. For now, store as a recording and play it.
-      // Use the recordings API as a workaround.
-      this.log.warn(`[ARI] Sound upload returned ${resp.status}, using recording workaround`);
-    }
-
-    // Play the uploaded sound
-    const mediaUri = `sound:${soundName}`;
     try {
-      await this.playMedia(callId, mediaUri);
-    } catch {
-      // If sound: URI failed, the upload may not be supported.
-      // Store as recording and play via recording: URI
-      this.log.warn(`[ARI] sound: URI failed, attempting recording: URI`);
-      const recordingUri = `recording:${soundName}`;
-      await this.playMedia(callId, recordingUri);
-    }
+      // Synthesize text → WAV buffer
+      const result = await this.ttsManager.synthesize(callId, options);
 
-    return soundName;
+      // Upload and play the WAV on the channel (waits for PlaybackFinished)
+      await this.uploadAndPlayFile(callId, result.audio, `tts-${Date.now()}.wav`);
+
+      this.callManager.broadcastEvent(callId, "call.speak_finished", {
+        text: options.text,
+        voice: result.voice,
+        language: result.language,
+        durationSeconds: result.durationSeconds,
+      });
+      this.notifyWebhook("call.speak_finished", {
+        ...this.callManager.get(callId),
+        text: options.text,
+        voice: result.voice,
+        language: result.language,
+        durationSeconds: result.durationSeconds,
+      });
+
+      return {
+        voice: result.voice,
+        language: result.language,
+        durationSeconds: result.durationSeconds,
+      };
+    } catch (err: any) {
+      this.log.error(`[ARI] Speak failed for call ${callId}:`, err);
+      this.callManager.broadcastEvent(callId, "call.speak_error", {
+        text: options.text,
+        error: err.message,
+      });
+
+      if (err instanceof AriError) throw err;
+      // AbortError = timeout or cancellation → 504 Gateway Timeout
+      if (err.name === "AbortError" || err.name === "TimeoutError") {
+        throw new AriError(`Speak timed out: ${err.message}`, 504);
+      }
+      const parsed = parseAriError(err);
+      throw new AriError(`Speak failed: ${parsed.message}`, 502);
+    } finally {
+      // Restore previous state if still speaking
+      const current = this.callManager.get(callId);
+      if (current?.state === "speaking") {
+        this.callManager.updateState(callId, previousState === "speaking" ? "answered" : previousState);
+      }
+    }
   }
 
   /**
@@ -565,21 +710,69 @@ export class AriConnection {
       throw new AriError(`Play failed: ${parsed.message}`, parsed.statusCode);
     }
 
-    return new Promise<void>((resolve, reject) => {
-      playback.on("PlaybackFinished", () => {
-        // Restore previous state if still playing
-        const current = this.callManager.get(callId);
-        if (current?.state === "playing") {
-          this.callManager.updateState(callId, previousState === "playing" ? "answered" : previousState);
-        }
-        resolve();
-      });
+    // Wrap promise + listeners so cleanup always runs, even on unexpected errors
+    let cleanupFn: (() => void) | undefined;
 
-      playback.on("PlaybackFailed", (event: any) => {
-        this.callManager.updateState(callId, previousState === "playing" ? "answered" : previousState);
-        reject(new AriError(`Playback failed: ${event.reason}`, 500));
+    try {
+      return await new Promise<void>((resolve, reject) => {
+        let settled = false;
+
+        const cleanup = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(safetyTimeout);
+          playback.removeListener("PlaybackFinished", onFinished);
+          playback.removeListener("PlaybackFailed", onFailed);
+          this.callManager.removeListener("event", onCallEvent);
+        };
+
+        // Expose cleanup to outer try/catch for safety
+        cleanupFn = cleanup;
+
+        const restoreState = () => {
+          const current = this.callManager.get(callId);
+          if (current?.state === "playing") {
+            this.callManager.updateState(callId, previousState === "playing" ? "answered" : previousState);
+          }
+        };
+
+        const onFinished = () => {
+          cleanup();
+          restoreState();
+          resolve();
+        };
+
+        const onFailed = (event: any) => {
+          cleanup();
+          restoreState();
+          reject(new AriError(`Playback failed: ${event.reason}`, 500));
+        };
+
+        // If the call ends during playback, resolve (channel gone, nothing to play)
+        const onCallEvent = (event: any) => {
+          if (event.type === "call.ended" && event.callId === callId) {
+            cleanup();
+            restoreState();
+            resolve();
+          }
+        };
+
+        // Safety timeout to avoid hanging forever (30s)
+        const safetyTimeout = setTimeout(() => {
+          cleanup();
+          restoreState();
+          reject(new AriError("Playback timed out (30s safety limit)", 504));
+        }, 30_000);
+
+        playback.once("PlaybackFinished", onFinished);
+        playback.once("PlaybackFailed", onFailed);
+        this.callManager.on("event", onCallEvent);
       });
-    });
+    } catch (err) {
+      // Ensure listeners are cleaned up even if the promise rejects unexpectedly
+      cleanupFn?.();
+      throw err;
+    }
   }
 
   /**
@@ -1003,6 +1196,18 @@ export class AriConnection {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+
+    // Cancel all in-flight TTS requests
+    this.ttsManager?.cancelAll();
+
+    // Stop all streaming playbacks
+    if (this.audioPlaybackManager) {
+      try {
+        await this.audioPlaybackManager.stopAll();
+      } catch (err) {
+        this.log.warn("[ARI] Failed to stop playbacks on disconnect:", err);
+      }
     }
 
     // Stop all ASR sessions

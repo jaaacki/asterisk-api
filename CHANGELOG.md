@@ -1,5 +1,83 @@
 # Changelog
 
+## [0.3.2] - 2026-02-07
+
+### Fixed
+- **Timer drift in audio streaming** — replaced `setInterval` with wall-clock-based `setTimeout` scheduler in `audio-playback.ts`; over 30s of audio the old approach could drift 500ms+ causing jitter and clicks
+- **Duplicate event listeners on ARI reconnect** — `connect()` now removes all listeners from old managers before re-creating them, preventing doubled events and memory leaks after reconnect
+- **playMedia() listener leak** — hardened promise+listener pattern with outer try/catch to guarantee cleanup runs on all code paths
+
+### Improved
+- **WAV processing performance** — `toMono16bit()` and `resample()` in `wav-utils.ts` now use `Int16Array` typed array views instead of per-sample `readInt16LE`/`writeInt16LE` calls (2-3x faster for large audio buffers)
+- **WebSocket backpressure** — audio streaming now monitors `bufferedAmount` and pauses chunk scheduling when buffer exceeds 64KB, resuming at 32KB; prevents unbounded memory growth on slow connections
+- **Stream drain on completion** — after last audio chunk, polls `bufferedAmount === 0` (with 500ms safety timeout) instead of fixed 20ms delay; prevents audio truncation on immediate hangup
+- **ARI setup timeouts** — `externalMedia()`, `bridges.create()`, and `bridges.addChannel()` now have 10s timeouts via `Promise.race`; prevents indefinite hangs if Asterisk becomes unresponsive
+
+## [0.3.1] - 2026-02-07
+
+### Fixed
+- **TTS playback now works across hosts** — replaced file-based approach (broken because asterisk-api and Asterisk run on different machines) with streaming via ExternalMedia WebSocket. WAV audio from TTS is parsed, converted to raw PCM, and streamed directly into the call channel in real-time. No files, no bind mounts, no SSH. Fixes #16, #17.
+- **Allowlist no longer blocks TTS playback channels** — ExternalMedia channels created for TTS streaming (prefixed `ttsplay-`) are now skipped in the `StasisStart` handler, preventing the allowlist from hanging up internal infrastructure channels. Fixes #18.
+
+### Added
+- **`src/wav-utils.ts`** — WAV header parser, PCM extraction, stereo→mono and 8→16bit conversion, sample rate resampling, Asterisk slin format name mapping
+- **`src/audio-playback.ts`** — `AudioPlayback` (single session) and `AudioPlaybackManager` (multi-call) for streaming PCM into calls via ExternalMedia WebSocket + mixing bridge
+- **New WebSocket events**: `call.playback_stream_started`, `call.playback_stream_finished`, `call.playback_stream_error`
+- **`externalMedia()` and `snoopChannelWithId()`** type declarations in `ari-client.d.ts`
+
+### Removed
+- **Docker sounds bind mount** — no longer needed; audio streams over WebSocket, not filesystem
+- **`ASTERISK_SOUNDS_DIR` env var / `audio.asteriskSoundsDir` config** — removed (no file I/O)
+- **Dockerfile `mkdir` for sounds dir** — not needed for streaming approach
+
+## [0.3.0] - 2026-02-07
+
+### Fixed
+- **TtsManager cancellation now works** — abort signal is wired through to the underlying `fetch()` call; `cancel()` and `cancelAll()` actually abort in-flight TTS requests on hangup/shutdown
+- **`playMedia()` no longer hangs if channel dies** — added 30s safety timeout, listens for call end events, cleans up all listeners (fixes promise leak on hangup during playback)
+- **`playMedia()` event listener cleanup** — uses `once()` + explicit `removeListener()` to prevent listener accumulation across multiple playbacks
+- **`uploadAndPlayFile()` throws on upload failure** — previously logged a warning and continued with a non-existent sound URI; now throws `AriError` with status and body for proper error propagation
+- **Removed fictional `recording:` URI fallback** — the fallback in `uploadAndPlayFile()` pointed to nothing; removed dead code path
+- **TTS/ASR config now optional** — app no longer crashes on startup if `TTS_URL` or `ASR_URL` env vars are missing; features are simply disabled with a warning log
+- **`speak()` returns 501 when TTS not configured** — instead of a generic 500 error
+- **`speak()` returns 504 for timeouts** — `AbortError`/`TimeoutError` now correctly maps to 504 Gateway Timeout instead of generic 502
+- **`speak()` logs full error object** — not just `err.message`, for better debugging
+- **Call cleanup timeouts tracked for graceful shutdown** — `setTimeout` IDs stored in a map; `clearAllTimers()` called on shutdown to prevent timers from keeping the process alive
+
+### Added
+- **TTS (Text-to-Speech) integration** with Qwen3-TTS server (OpenAI-compatible REST API)
+  - `TtsClient` class — stateless HTTP client, sends text to `POST /v1/audio/speech`, returns WAV buffer
+  - `TtsManager` class — tracks in-flight requests per call for cancellation on hangup/shutdown
+  - WAV duration estimation from header bytes
+  - 30s default timeout to accommodate cold-start model loading
+- **`POST /calls/:id/speak` endpoint** — synthesize text and play on active call
+  - Request body: `{ text, voice?, language?, speed? }`
+  - Response: `{ status, text, voice, language, durationSeconds }`
+- **`"speaking"` call state** — set while TTS synthesis + playback is in progress
+- **New WebSocket events**: `call.speak_started`, `call.speak_finished`, `call.speak_error`
+- **Webhook notification**: `call.speak_finished` sent to OpenClaw webhook URL
+- **TTS config** via environment variables: `TTS_URL`, `TTS_DEFAULT_VOICE`, `TTS_DEFAULT_LANGUAGE`, `TTS_TIMEOUT_MS`
+- Available voices: vivian (default), serena, uncle_fu, dylan, eric, ryan, aiden, ono_anna, sohee
+
+### Technical Details
+- TTS server: Qwen3-TTS at `192.168.2.198:8101`, container `qwen3_tts`
+- No new npm dependencies — uses native `fetch()` for HTTP requests
+- TTS requests automatically cancelled on call end or server shutdown
+- WAV audio uploaded to Asterisk via `uploadAndPlayFile()` (existing ARI sound upload pipeline)
+- Idle auto-unload on TTS server: ~120s → first request after idle takes ~10-20s for model reload
+
+## [0.2.2] - 2026-02-07
+
+### Fixed
+- **ASR URL no longer hardcoded** — moved to `ASR_URL` env var via `asr.url` config field
+- **ExternalMedia WebSocket URL** — fixed URL from wrong `/ari/externalMedia/<id>` to correct `/media/<connectionId>` using `MEDIA_WEBSOCKET_CONNECTION_ID` from channel vars
+- **ExternalMedia Stasis race condition** — WebSocket client now connects BEFORE bridging (server-mode channels only enter Stasis after client connects); added `"media"` subprotocol
+- **Webhook URL in `.env.example`** — changed `localhost` to `host.docker.internal` so Docker containers can reach the host
+
+### Added
+- **Auto-start audio capture on ready** — inbound calls automatically start the full audio pipeline (snoop → ExternalMedia → bridge → ASR) after greeting + beep, no manual API call needed
+- `ASR_URL` in `.env.example` template
+
 ## [0.2.1] - 2026-02-07
 
 ### Added
