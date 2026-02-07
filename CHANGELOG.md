@@ -2,6 +2,18 @@
 
 ## [0.3.0] - 2026-02-07
 
+### Fixed
+- **TtsManager cancellation now works** — abort signal is wired through to the underlying `fetch()` call; `cancel()` and `cancelAll()` actually abort in-flight TTS requests on hangup/shutdown
+- **`playMedia()` no longer hangs if channel dies** — added 30s safety timeout, listens for call end events, cleans up all listeners (fixes promise leak on hangup during playback)
+- **`playMedia()` event listener cleanup** — uses `once()` + explicit `removeListener()` to prevent listener accumulation across multiple playbacks
+- **`uploadAndPlayFile()` throws on upload failure** — previously logged a warning and continued with a non-existent sound URI; now throws `AriError` with status and body for proper error propagation
+- **Removed fictional `recording:` URI fallback** — the fallback in `uploadAndPlayFile()` pointed to nothing; removed dead code path
+- **TTS/ASR config now optional** — app no longer crashes on startup if `TTS_URL` or `ASR_URL` env vars are missing; features are simply disabled with a warning log
+- **`speak()` returns 501 when TTS not configured** — instead of a generic 500 error
+- **`speak()` returns 504 for timeouts** — `AbortError`/`TimeoutError` now correctly maps to 504 Gateway Timeout instead of generic 502
+- **`speak()` logs full error object** — not just `err.message`, for better debugging
+- **Call cleanup timeouts tracked for graceful shutdown** — `setTimeout` IDs stored in a map; `clearAllTimers()` called on shutdown to prevent timers from keeping the process alive
+
 ### Added
 - **TTS (Text-to-Speech) integration** with Qwen3-TTS server (OpenAI-compatible REST API)
   - `TtsClient` class — stateless HTTP client, sends text to `POST /v1/audio/speech`, returns WAV buffer
