@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.0] - 2026-02-07
+
+### Added
+- Real-time audio capture from phone calls via ARI
+- `AudioCaptureManager` class for managing audio capture sessions
+- `AudioCapture` class for per-call audio capture using Snoop + ExternalMedia channels
+- Audio capture types: `AudioCaptureInfo`, `AudioFrame`, `AudioCaptureConfig`
+- `POST /calls/:id/audio/start` endpoint to start audio capture on a call
+- `POST /calls/:id/audio/stop` endpoint to stop audio capture
+- WebSocket events for audio capture:
+  - `call.audio_capture_started` - fired when audio capture starts
+  - `call.audio_capture_stopped` - fired when audio capture stops
+  - `call.audio_frame` - emits audio frames (base64-encoded PCM data)
+  - `call.audio_capture_error` - fired on audio capture errors
+- `audioCapture` field in `CallRecord` to track audio capture status
+- Automatic audio capture cleanup on call end (`StasisEnd`)
+- Automatic audio capture cleanup on ARI disconnect
+
+### Technical Details
+- Audio capture uses ARI Snoop to create monitoring channel
+- ExternalMedia channel streams audio via WebSocket (server mode)
+- Default format: PCM 16-bit, 16kHz mono (`slin16`)
+- Spy direction: `in` (captures incoming audio from caller)
+- Audio frames chunked at ~100ms intervals (1600 samples @ 16kHz)
+
+### Notes
+- This is an experimental feature for real-time audio processing
+- Full WebSocket audio streaming implementation requires additional work
+- Currently sets up the ARI infrastructure; audio frame emission is a placeholder
+
 ## [0.1.7] - 2026-02-07
 
 ### Added

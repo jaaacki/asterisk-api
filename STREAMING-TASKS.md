@@ -4,7 +4,7 @@
 
 | Agent Label | Session Key | Task | Status |
 |-------------|-------------|------|--------|
-| ari-audio-capture | agent:main:subagent:e82f89c8-2efb-47b0-8619-730ba2fe1c9d | ARI Audio Capture (v0.2.0) | 🔄 In Progress |
+| asr-client | agent:main:subagent:42fae813-cb32-4392-9a6d-ea87a92a20e6 | ASR Client + Audio Streaming (v0.2.1) | 🔄 In Progress |
 
 ## Task Queue (Pending)
 
@@ -19,6 +19,7 @@
 | Task | Component | Version | Completed | Agent |
 |------|-----------|---------|-----------|-------|
 | ASR WebSocket | qwen3-asr-server | v0.2.0 | 2026-02-07 | asr-websocket |
+| ARI Audio Capture | asterisk-api | v0.2.0 | 2026-02-07 | ari-audio-capture |
 
 ## Commands
 

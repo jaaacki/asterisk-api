@@ -1,9 +1,10 @@
 import ariClient from "ari-client";
 import type { Config } from "./config.js";
 import { CallManager } from "./call-manager.js";
-import type { CallRecord, OriginateRequest, BridgeRecord, TransferRequest } from "./types.js";
+import type { CallRecord, OriginateRequest, BridgeRecord, TransferRequest, AudioCaptureInfo } from "./types.js";
 import { randomUUID } from "node:crypto";
 import { isInboundAllowed } from "./allowlist.js";
+import { AudioCaptureManager } from "./audio-capture.js";
 
 /** Custom error class for ARI-specific errors with HTTP status hints. */
 export class AriError extends Error {
@@ -49,6 +50,7 @@ export class AriConnection {
   private ari: any = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connected = false;
+  private audioCaptureManager?: AudioCaptureManager;
 
   constructor(
     private config: Config,
@@ -64,6 +66,44 @@ export class AriConnection {
         this.config.ari.username,
         this.config.ari.password
       );
+
+      // Initialize audio capture manager
+      this.audioCaptureManager = new AudioCaptureManager(this.ari, {
+        format: "slin16", // PCM 16-bit, 16kHz
+        sampleRate: 16000,
+        transport: "websocket",
+        encapsulation: "none",
+        spyDirection: "in", // Capture incoming audio from caller
+      }, this.log);
+
+      // Forward audio capture events to call manager for WebSocket broadcast
+      this.audioCaptureManager.on("capture.started", ({ callId, info }) => {
+        this.log.info(`[ARI] Audio capture started for call ${callId}`);
+        this.callManager.broadcastEvent(callId, "call.audio_capture_started", info);
+      });
+
+      this.audioCaptureManager.on("capture.stopped", ({ callId }) => {
+        this.log.info(`[ARI] Audio capture stopped for call ${callId}`);
+        this.callManager.broadcastEvent(callId, "call.audio_capture_stopped", {});
+      });
+
+      this.audioCaptureManager.on("capture.frame", (frame) => {
+        // Emit audio frames to WebSocket clients
+        this.callManager.broadcastEvent(frame.callId, "call.audio_frame", {
+          timestamp: frame.timestamp,
+          format: frame.format,
+          sampleRate: frame.sampleRate,
+          channels: frame.channels,
+          sampleCount: frame.sampleCount,
+          // Note: we send base64-encoded audio data for JSON transmission
+          data: frame.data.toString("base64"),
+        });
+      });
+
+      this.audioCaptureManager.on("capture.error", ({ callId, error }) => {
+        this.log.error(`[ARI] Audio capture error for call ${callId}:`, error);
+        this.callManager.broadcastEvent(callId, "call.audio_capture_error", { error: String(error) });
+      });
 
       this.setupEventHandlers();
       this.ari.start(this.config.ari.app);
@@ -157,10 +197,19 @@ export class AriConnection {
       }, ringDelay);
     });
 
-    ari.on("StasisEnd", (event: any, channel: any) => {
+    ari.on("StasisEnd", async (event: any, channel: any) => {
       this.log.info(`[ARI] StasisEnd: ${channel.id}`);
       const call = this.callManager.getByChannelId(channel.id);
       if (call && call.state !== "ended") {
+        // Stop audio capture if active
+        if (this.audioCaptureManager?.hasCapture(call.id)) {
+          try {
+            await this.audioCaptureManager.stopCapture(call.id);
+          } catch (err) {
+            this.log.warn(`[ARI] Failed to stop audio capture on StasisEnd: ${err}`);
+          }
+        }
+
         this.callManager.end(call.id, "normal");
         this.notifyWebhook("call.ended", call);
       }
@@ -763,6 +812,62 @@ export class AriConnection {
     }
   }
 
+  // ── Audio Capture ──────────────────────────────────────────────────
+
+  /**
+   * Start audio capture on a call.
+   */
+  async startAudioCapture(callId: string): Promise<AudioCaptureInfo> {
+    const call = this.callManager.get(callId);
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
+
+    if (!this.audioCaptureManager) {
+      throw new AriError("Audio capture manager not initialized", 500);
+    }
+
+    try {
+      const info = await this.audioCaptureManager.startCapture(callId, call.channelId);
+      
+      // Update call record with audio capture info
+      const updatedCall = this.callManager.get(callId);
+      if (updatedCall) {
+        updatedCall.audioCapture = info;
+      }
+
+      return info;
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Start audio capture failed: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
+  /**
+   * Stop audio capture on a call.
+   */
+  async stopAudioCapture(callId: string): Promise<void> {
+    const call = this.callManager.get(callId);
+    if (!call) throw new AriError(`Call ${callId} not found`, 404);
+    this.requireConnection();
+
+    if (!this.audioCaptureManager) {
+      throw new AriError("Audio capture manager not initialized", 500);
+    }
+
+    try {
+      await this.audioCaptureManager.stopCapture(callId);
+
+      // Clear audio capture info from call record
+      const updatedCall = this.callManager.get(callId);
+      if (updatedCall && updatedCall.audioCapture) {
+        updatedCall.audioCapture.enabled = false;
+      }
+    } catch (err: any) {
+      const parsed = parseAriError(err);
+      throw new AriError(`Stop audio capture failed: ${parsed.message}`, parsed.statusCode);
+    }
+  }
+
   /**
    * Notify OpenClaw plugin via webhook callback.
    */
@@ -795,6 +900,16 @@ export class AriConnection {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+
+    // Stop all audio captures
+    if (this.audioCaptureManager) {
+      try {
+        await this.audioCaptureManager.stopAll();
+      } catch (err) {
+        this.log.warn("[ARI] Failed to stop audio captures on disconnect:", err);
+      }
+    }
+
     if (this.ari) {
       try {
         this.ari.stop();

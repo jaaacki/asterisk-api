@@ -21,6 +21,26 @@ export interface CallRecord {
   endedAt?: Date;
   hangupCause?: string;
   recordings: string[];
+  audioCapture?: AudioCaptureInfo;
+}
+
+export interface AudioCaptureInfo {
+  enabled: boolean;
+  snoopChannelId?: string;
+  externalMediaChannelId?: string;
+  format: string;
+  sampleRate: number;
+  startedAt: Date;
+}
+
+export interface AudioFrame {
+  callId: string;
+  timestamp: number;
+  data: Buffer;
+  format: string;
+  sampleRate: number;
+  channels: number;
+  sampleCount: number;
 }
 
 export interface CallEvent {
@@ -60,4 +80,12 @@ export interface TransferRequest {
   endpoint: string;
   callerId?: string;
   timeout?: number;
+}
+
+export interface AudioCaptureConfig {
+  enabled: boolean;
+  format?: string;
+  sampleRate?: number;
+  transport?: "websocket" | "udp" | "tcp";
+  encapsulation?: "rtp" | "audiosocket" | "none";
 }

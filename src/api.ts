@@ -115,6 +115,8 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
         "POST /calls/:id/record": "Start recording { name?, format?, maxDurationSeconds?, beep? }",
         "POST /calls/:id/dtmf": "Send DTMF tones { dtmf }",
         "POST /calls/:id/transfer": "Transfer call to endpoint { endpoint, callerId?, timeout? }",
+        "POST /calls/:id/audio/start": "Start real-time audio capture (emits audio frames via WebSocket)",
+        "POST /calls/:id/audio/stop": "Stop audio capture",
         "POST /bridges": "Create a mixing bridge { name? }",
         "GET  /bridges": "List all bridges",
         "GET  /bridges/:id": "Get bridge details",
@@ -375,6 +377,28 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
       const body = HangupRequestSchema.parse(req.body);
       await ariConn.hangup(req.params.id, body?.reason);
       res.json({ status: "hungup" });
+    } catch (err: unknown) {
+      errorResponse(res, err);
+    }
+  });
+
+  // ── Audio Capture routes ──────────────────────────────────────────
+
+  // POST /calls/:id/audio/start — start audio capture on a call
+  app.post("/calls/:id/audio/start", async (req: Request, res: Response) => {
+    try {
+      const info = await ariConn.startAudioCapture(req.params.id);
+      res.status(200).json({ audioCapture: info });
+    } catch (err: unknown) {
+      errorResponse(res, err);
+    }
+  });
+
+  // POST /calls/:id/audio/stop — stop audio capture on a call
+  app.post("/calls/:id/audio/stop", async (req: Request, res: Response) => {
+    try {
+      await ariConn.stopAudioCapture(req.params.id);
+      res.status(204).send();
     } catch (err: unknown) {
       errorResponse(res, err);
     }
