@@ -24,10 +24,10 @@ const ConfigSchema = z.object({
     greetingSound: z.string().default("hello-world"),
   }),
   asr: z.object({
-    url: z.string().url(),
+    url: z.string().url().optional(),
   }),
   tts: z.object({
-    url: z.string().url(),
+    url: z.string().url().optional(),
     defaultVoice: z.string().default("vivian"),
     defaultLanguage: z.string().default("English"),
     timeoutMs: z.coerce.number().int().min(1000).default(30000),
