@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.1] - 2026-02-07
+
+### Fixed
+- **TTS playback now works across hosts** — replaced file-based approach (broken because asterisk-api and Asterisk run on different machines) with streaming via ExternalMedia WebSocket. WAV audio from TTS is parsed, converted to raw PCM, and streamed directly into the call channel in real-time. No files, no bind mounts, no SSH. Fixes #16, #17.
+- **Allowlist no longer blocks TTS playback channels** — ExternalMedia channels created for TTS streaming (prefixed `ttsplay-`) are now skipped in the `StasisStart` handler, preventing the allowlist from hanging up internal infrastructure channels. Fixes #18.
+
+### Added
+- **`src/wav-utils.ts`** — WAV header parser, PCM extraction, stereo→mono and 8→16bit conversion, sample rate resampling, Asterisk slin format name mapping
+- **`src/audio-playback.ts`** — `AudioPlayback` (single session) and `AudioPlaybackManager` (multi-call) for streaming PCM into calls via ExternalMedia WebSocket + mixing bridge
+- **New WebSocket events**: `call.playback_stream_started`, `call.playback_stream_finished`, `call.playback_stream_error`
+- **`externalMedia()` and `snoopChannelWithId()`** type declarations in `ari-client.d.ts`
+
+### Removed
+- **Docker sounds bind mount** — no longer needed; audio streams over WebSocket, not filesystem
+- **`ASTERISK_SOUNDS_DIR` env var / `audio.asteriskSoundsDir` config** — removed (no file I/O)
+- **Dockerfile `mkdir` for sounds dir** — not needed for streaming approach
+
 ## [0.3.0] - 2026-02-07
 
 ### Fixed

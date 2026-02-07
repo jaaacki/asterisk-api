@@ -13,10 +13,7 @@ const ConfigSchema = z.object({
     host: z.string().default("0.0.0.0"),
     apiKey: z.string().optional(),
   }),
-  audio: z.object({
-    /** Base URL for uploading/managing sounds on Asterisk via ARI HTTP */
-    asteriskSoundsDir: z.string().default("/var/lib/asterisk/sounds/custom"),
-  }),
+  audio: z.object({}),
   inbound: z.object({
     /** Delay in ms before answering inbound calls (simulates ringing) */
     ringDelayMs: z.coerce.number().int().min(0).default(3000),
@@ -52,9 +49,7 @@ export function loadConfig(): Config {
       host: process.env.API_HOST,
       apiKey: process.env.API_KEY || undefined,
     },
-    audio: {
-      asteriskSoundsDir: process.env.ASTERISK_SOUNDS_DIR,
-    },
+    audio: {},
     inbound: {
       ringDelayMs: process.env.INBOUND_RING_DELAY_MS,
       greetingSound: process.env.INBOUND_GREETING_SOUND,

@@ -60,6 +60,22 @@ declare module "ari-client" {
     record(params: { channelId: string } & RecordParams): Promise<AriLiveRecording>;
     sendDTMF(params: { channelId: string; dtmf: string }): Promise<void>;
     originate(params: OriginateParams): Promise<AriChannel>;
+    externalMedia(params: {
+      channelId: string;
+      app: string;
+      format: string;
+      transport?: string;
+      encapsulation?: string;
+      connection_type?: string;
+      external_host?: string;
+    }): Promise<AriChannel & { channelvars?: Record<string, string> }>;
+    snoopChannelWithId(params: {
+      channelId: string;
+      snoopId: string;
+      app: string;
+      spy: string;
+      whisper: string;
+    }): Promise<AriChannel>;
   }
 
   interface AriBridgesApi {

@@ -8,7 +8,7 @@ Built as the telephony backend for [OpenClaw](https://github.com/jaaacki/opencla
 
 - **Call control** — originate, answer, hang up, transfer calls
 - **Media playback** — play built-in sounds, sequential playlists, or upload raw WAV files
-- **Text-to-speech** — synthesize and play speech on calls via TTS server (Qwen3-TTS, optional)
+- **Text-to-speech** — synthesize and stream speech into calls via ExternalMedia WebSocket (Qwen3-TTS, optional)
 - **Speech recognition** — real-time audio capture and ASR transcription pipeline (optional)
 - **Recording** — start/stop call recording, list, download, copy, and delete stored recordings
 - **DTMF** — send DTMF tones on active calls
@@ -220,7 +220,7 @@ On connect, the WebSocket sends a `snapshot` message with all active calls. Subs
 }
 ```
 
-Event types: `call.created`, `call.state_changed`, `call.ended`, `call.dtmf`, `call.playback_finished`, `call.recording_finished`, `call.speak_started`, `call.speak_finished`, `call.speak_error`, `call.transcription`, `call.audio_capture_started`, `call.audio_capture_stopped`, `call.audio_frame`, `bridge.created`, `bridge.destroyed`
+Event types: `call.created`, `call.state_changed`, `call.ended`, `call.dtmf`, `call.playback_finished`, `call.playback_stream_started`, `call.playback_stream_finished`, `call.playback_stream_error`, `call.recording_finished`, `call.speak_started`, `call.speak_finished`, `call.speak_error`, `call.transcription`, `call.audio_capture_started`, `call.audio_capture_stopped`, `call.audio_frame`, `bridge.created`, `bridge.destroyed`
 
 ## Usage Examples
 
@@ -299,7 +299,9 @@ src/
 ├── call-manager.ts     # In-memory call/bridge state and event emitter
 ├── ws-server.ts        # WebSocket server broadcasting call events
 ├── allowlist.ts        # Phone number allowlist with hot-reload from allowlist.json
-├── audio-capture.ts    # Per-call audio pipeline: Snoop → ExternalMedia → Bridge → WS
+├── audio-capture.ts    # Per-call audio capture: Snoop → ExternalMedia → Bridge → WS
+├── audio-playback.ts   # Per-call audio playback: TTS → WS → ExternalMedia → Bridge → Call
+├── wav-utils.ts        # WAV parser, PCM extraction, resampling, slin format mapping
 ├── asr-client.ts       # WebSocket client to ASR service for speech recognition
 ├── tts-client.ts       # TTS HTTP client (Qwen3-TTS, OpenAI-compatible API)
 ├── types.ts            # TypeScript interfaces (CallRecord, BridgeRecord, etc.)
