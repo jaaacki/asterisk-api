@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.6] - 2026-02-07
+
+### Added
+- `GET /allowlist` endpoint to view current inbound/outbound allowlist
+- `POST /allowlist/reload` endpoint to reload allowlist from file
+- Outbound allowlist enforcement on `POST /calls` — returns 403 if destination not in allowlist
+- Inbound allowlist enforcement on `StasisStart` — hangs up calls from non-allowed callers
+
+### Changed
+- `POST /calls` now returns detailed 403 error when blocked by allowlist, including extracted number and hint
+
+### Security
+- Shared trunk now protected by allowlist at API level
+- Both inbound and outbound calls filtered before processing
+
 ## [0.1.5] - 2026-02-07
 
 ### Added

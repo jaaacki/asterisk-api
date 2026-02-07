@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Config } from "./config.js";
 import { AriConnection, AriError } from "./ari-connection.js";
 import type { CallManager } from "./call-manager.js";
+import { isOutboundAllowed, extractNumberFromEndpoint, getAllowlist, reloadAllowlist } from "./allowlist.js";
 
 // ── Zod request body schemas ────────────────────────────────────────────
 
@@ -102,6 +103,8 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
       endpoints: {
         "GET  /": "This overview",
         "GET  /health": "Health check (ARI connection status, active call count)",
+        "GET  /allowlist": "View current inbound/outbound allowlist",
+        "POST /allowlist/reload": "Reload allowlist from allowlist.json",
         "GET  /endpoints": "List available SIP/PJSIP endpoints from Asterisk",
         "GET  /calls": "List active calls",
         "GET  /calls/:id": "Get call details",
@@ -135,6 +138,28 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
       status: "ok",
       ari: ariConn.isConnected(),
       activeCalls: callManager.listActive().length,
+    });
+  });
+
+  // ── GET /allowlist ─────────────────────────────────────────────────
+
+  app.get("/allowlist", (_req: Request, res: Response) => {
+    const allowlist = getAllowlist();
+    res.json({
+      inbound: allowlist.inbound,
+      outbound: allowlist.outbound,
+      note: "Empty arrays = allow all (open mode)",
+    });
+  });
+
+  // ── POST /allowlist/reload ─────────────────────────────────────────
+
+  app.post("/allowlist/reload", (_req: Request, res: Response) => {
+    const allowlist = reloadAllowlist();
+    res.json({
+      status: "reloaded",
+      inbound: allowlist.inbound,
+      outbound: allowlist.outbound,
     });
   });
 
@@ -172,6 +197,19 @@ export function createApi(config: Config, ariConn: AriConnection, callManager: C
   app.post("/calls", async (req: Request, res: Response) => {
     try {
       const body = OriginateRequestSchema.parse(req.body);
+
+      // Check outbound allowlist before originating
+      if (!isOutboundAllowed(body.endpoint)) {
+        const extractedNumber = extractNumberFromEndpoint(body.endpoint);
+        res.status(403).json({
+          error: "Outbound call blocked by allowlist",
+          endpoint: body.endpoint,
+          extractedNumber: extractedNumber || "(could not extract)",
+          hint: "Add the destination number to allowlist.json outbound array",
+        });
+        return;
+      }
+
       const call = await ariConn.originate(body);
       res.status(201).json({ call });
     } catch (err: unknown) {

@@ -3,6 +3,7 @@ import type { Config } from "./config.js";
 import { CallManager } from "./call-manager.js";
 import type { CallRecord, OriginateRequest, BridgeRecord, TransferRequest } from "./types.js";
 import { randomUUID } from "node:crypto";
+import { isInboundAllowed } from "./allowlist.js";
 
 /** Custom error class for ARI-specific errors with HTTP status hints. */
 export class AriError extends Error {
@@ -94,7 +95,8 @@ export class AriConnection {
 
     // Inbound call enters Stasis
     ari.on("StasisStart", (event: any, channel: any) => {
-      this.log.info(`[ARI] StasisStart: ${channel.id} from ${channel.caller?.number || "unknown"}`);
+      const callerNumber = channel.caller?.number || "";
+      this.log.info(`[ARI] StasisStart: ${channel.id} from ${callerNumber || "unknown"}`);
 
       // Check if this is a dialed channel (outbound leg)
       if (event.args?.includes("dialed")) return;
@@ -102,14 +104,23 @@ export class AriConnection {
       // Check if we already track this channel (outbound originated)
       if (this.callManager.getByChannelId(channel.id)) return;
 
-      // New inbound call
+      // Check inbound allowlist
+      if (!isInboundAllowed(callerNumber)) {
+        this.log.warn(`[ARI] Inbound call from ${callerNumber} blocked by allowlist — hanging up`);
+        channel.hangup().catch((err: any) => {
+          this.log.error(`[ARI] Failed to hangup blocked call: ${err.message}`);
+        });
+        return;
+      }
+
+      // New inbound call (allowed)
       const callId = randomUUID();
       const record: CallRecord = {
         id: callId,
         channelId: channel.id,
         state: "answered",
         direction: "inbound",
-        callerNumber: channel.caller?.number || "",
+        callerNumber,
         calleeNumber: channel.dialplan?.exten || "",
         createdAt: new Date(),
         answeredAt: new Date(),
