@@ -105,7 +105,11 @@ export class AudioCapture extends EventEmitter {
       this.externalMediaChannelId = externalMediaChannel.id;
       this.log.info(`[AudioCapture] Created ExternalMedia channel: ${this.externalMediaChannelId}`);
 
-      // Step 3: Create a bridge and connect snoop → ExternalMedia
+      // Step 3: Wait for ExternalMedia channel to enter Stasis before bridging
+      // (race condition fix — addChannel fails if channel hasn't entered Stasis yet)
+      await this.waitForStasisStart(externalMediaId, 5000);
+
+      // Step 4: Create a bridge and connect snoop → ExternalMedia
       const bridge = await this.ari.bridges.create({
         type: "mixing",
         name: `audiocap-bridge-${this.callId}`,
@@ -122,7 +126,7 @@ export class AudioCapture extends EventEmitter {
 
       this.log.info(`[AudioCapture] Bridged snoop and ExternalMedia channels`);
 
-      // Step 4: Connect to ExternalMedia WebSocket to receive audio frames
+      // Step 5: Connect to ExternalMedia WebSocket to receive audio frames
       await this.connectToExternalMedia(externalMediaId, format, sampleRate);
 
       this.active = true;
@@ -165,6 +169,34 @@ export class AudioCapture extends EventEmitter {
    */
   isActive(): boolean {
     return this.active;
+  }
+
+  /**
+   * Wait for a channel to enter Stasis (StasisStart event).
+   * Resolves immediately if the channel is already in Stasis.
+   */
+  private waitForStasisStart(channelId: string, timeoutMs: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Timed out waiting for StasisStart on channel ${channelId}`));
+      }, timeoutMs);
+
+      const onStasisStart = (event: any, channel: any) => {
+        if (channel.id === channelId) {
+          this.log.info(`[AudioCapture] StasisStart received for ExternalMedia channel ${channelId}`);
+          cleanup();
+          resolve();
+        }
+      };
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.ari.removeListener("StasisStart", onStasisStart);
+      };
+
+      this.ari.on("StasisStart", onStasisStart);
+    });
   }
 
   /**

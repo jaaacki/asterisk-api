@@ -88,8 +88,7 @@ export class AriConnection {
       );
 
       // Initialize ASR manager
-      const asrUrl = "ws://192.168.2.198:8100/ws/transcribe";
-      this.asrManager = new AsrManager(asrUrl, this.log);
+      this.asrManager = new AsrManager(this.config.asr.url, this.log);
 
       // Forward audio capture events to call manager for WebSocket broadcast
       this.audioCaptureManager.on("capture.started", async ({ callId, info }) => {
@@ -288,9 +287,17 @@ export class AriConnection {
               } catch (err: any) {
                 this.log.warn(`[ARI] Failed to play beep: ${err.message}`);
               }
-              // Start silence to keep channel in Stasis
+              // Call is ready for conversation
               this.callManager.updateState(callId, "ready");
               this.notifyWebhook("call.ready", this.callManager.get(callId)!);
+
+              // Auto-start audio capture + ASR pipeline
+              try {
+                await this.startAudioCapture(callId);
+                this.log.info(`[ARI] Auto-started audio capture for call ${callId}`);
+              } catch (err: any) {
+                this.log.error(`[ARI] Failed to auto-start audio capture for call ${callId}: ${err.message}`);
+              }
             });
           } catch (err: any) {
             this.log.error(`[ARI] Failed to play greeting: ${err.message}`);

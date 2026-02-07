@@ -23,6 +23,9 @@ const ConfigSchema = z.object({
     /** Default greeting sound to play after answering */
     greetingSound: z.string().default("hello-world"),
   }),
+  asr: z.object({
+    url: z.string().url(),
+  }),
   openclaw: z.object({
     webhookUrl: z.string().url().optional(),
   }),
@@ -49,6 +52,9 @@ export function loadConfig(): Config {
     inbound: {
       ringDelayMs: process.env.INBOUND_RING_DELAY_MS,
       greetingSound: process.env.INBOUND_GREETING_SOUND,
+    },
+    asr: {
+      url: process.env.ASR_URL,
     },
     openclaw: {
       webhookUrl: process.env.OPENCLAW_WEBHOOK_URL || undefined,

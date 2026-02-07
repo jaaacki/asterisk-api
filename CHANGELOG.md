@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.2] - 2026-02-07
+
+### Fixed
+- **ASR URL no longer hardcoded** — moved to `ASR_URL` env var via `asr.url` config field
+- **ExternalMedia Stasis race condition** — `bridge.addChannel()` now waits for `StasisStart` event (5s timeout) before bridging, preventing failures when Asterisk is slow to register the channel
+- **Webhook URL in `.env.example`** — changed `localhost` to `host.docker.internal` so Docker containers can reach the host
+
+### Added
+- **Auto-start audio capture on ready** — inbound calls automatically start the full audio pipeline (snoop → ExternalMedia → bridge → ASR) after greeting + beep, no manual API call needed
+- `ASR_URL` in `.env.example` template
+
 ## [0.2.1] - 2026-02-07
 
 ### Added
