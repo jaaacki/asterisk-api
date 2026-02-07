@@ -74,9 +74,9 @@ AudioCapture (per-call) → AudioCaptureManager (multi-call) → AriConnection (
 
 Copy `.env.example` to `.env`. Key variables: `ARI_URL`, `ARI_USERNAME`, `ARI_PASSWORD`, `ARI_APP`, `API_PORT`, `API_KEY`, `OPENCLAW_WEBHOOK_URL`.
 
-The ASR service URL is configured via `ASR_URL` env var (e.g., `ws://192.168.2.198:8100/ws/transcribe`).
+The ASR service URL is configured via `ASR_URL` env var (e.g., `ws://192.168.2.198:8100/ws/transcribe`). Optional — if omitted, speech recognition is disabled.
 
-The TTS service URL is configured via `TTS_URL` env var (e.g., `http://192.168.2.198:8101`). Additional TTS env vars: `TTS_DEFAULT_VOICE` (default: vivian), `TTS_DEFAULT_LANGUAGE` (default: English), `TTS_TIMEOUT_MS` (default: 30000).
+The TTS service URL is configured via `TTS_URL` env var (e.g., `http://192.168.2.198:8101`). Optional — if omitted, TTS is disabled and `POST /calls/:id/speak` returns 501. Additional TTS env vars: `TTS_DEFAULT_VOICE` (default: vivian), `TTS_DEFAULT_LANGUAGE` (default: English), `TTS_TIMEOUT_MS` (default: 30000).
 
 ## Asterisk/FreePBX Context
 
