@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.0] - 2026-02-07
+
+### Added
+- **TTS (Text-to-Speech) integration** with Qwen3-TTS server (OpenAI-compatible REST API)
+  - `TtsClient` class — stateless HTTP client, sends text to `POST /v1/audio/speech`, returns WAV buffer
+  - `TtsManager` class — tracks in-flight requests per call for cancellation on hangup/shutdown
+  - WAV duration estimation from header bytes
+  - 30s default timeout to accommodate cold-start model loading
+- **`POST /calls/:id/speak` endpoint** — synthesize text and play on active call
+  - Request body: `{ text, voice?, language?, speed? }`
+  - Response: `{ status, text, voice, language, durationSeconds }`
+- **`"speaking"` call state** — set while TTS synthesis + playback is in progress
+- **New WebSocket events**: `call.speak_started`, `call.speak_finished`, `call.speak_error`
+- **Webhook notification**: `call.speak_finished` sent to OpenClaw webhook URL
+- **TTS config** via environment variables: `TTS_URL`, `TTS_DEFAULT_VOICE`, `TTS_DEFAULT_LANGUAGE`, `TTS_TIMEOUT_MS`
+- Available voices: vivian (default), serena, uncle_fu, dylan, eric, ryan, aiden, ono_anna, sohee
+
+### Technical Details
+- TTS server: Qwen3-TTS at `192.168.2.198:8101`, container `qwen3_tts`
+- No new npm dependencies — uses native `fetch()` for HTTP requests
+- TTS requests automatically cancelled on call end or server shutdown
+- WAV audio uploaded to Asterisk via `uploadAndPlayFile()` (existing ARI sound upload pipeline)
+- Idle auto-unload on TTS server: ~120s → first request after idle takes ~10-20s for model reload
+
 ## [0.2.2] - 2026-02-07
 
 ### Fixed

@@ -8,6 +8,7 @@ Built as the telephony backend for [OpenClaw](https://github.com/jaaacki/opencla
 
 - **Call control** — originate, answer, hang up, transfer calls
 - **Media playback** — play built-in sounds, sequential playlists, or upload raw WAV files
+- **Text-to-speech** — synthesize and play speech on calls via TTS server (Qwen3-TTS)
 - **Recording** — start/stop call recording, list, download, copy, and delete stored recordings
 - **DTMF** — send DTMF tones on active calls
 - **Bridges** — create mixing bridges to connect multiple call legs (conferencing, transfers)
@@ -167,6 +168,7 @@ Visit `GET /` on a running instance for a live endpoint listing.
 | `DELETE` | `/calls/:id` | Hang up a call |
 | `POST` | `/calls/:id/play` | Play audio (single sound or sequential playlist) |
 | `POST` | `/calls/:id/play/file` | Upload and play a raw WAV file |
+| `POST` | `/calls/:id/speak` | Synthesize text-to-speech and play on call |
 | `POST` | `/calls/:id/record` | Start recording |
 | `POST` | `/calls/:id/dtmf` | Send DTMF tones |
 | `POST` | `/calls/:id/transfer` | Transfer call to another endpoint |
@@ -209,7 +211,7 @@ On connect, the WebSocket sends a `snapshot` message with all active calls. Subs
 }
 ```
 
-Event types: `call.created`, `call.state_changed`, `call.ended`, `bridge.created`, `bridge.destroyed`
+Event types: `call.created`, `call.state_changed`, `call.ended`, `call.speak_started`, `call.speak_finished`, `call.speak_error`, `call.transcription`, `bridge.created`, `bridge.destroyed`
 
 ## Usage Examples
 
@@ -235,6 +237,14 @@ Sequential playback:
 curl -X POST http://localhost:3456/calls/<call-id>/play \
   -H "Content-Type: application/json" \
   -d '{"media": ["sound:hello-world", "sound:goodbye"]}'
+```
+
+### Speak text on a call (TTS)
+
+```bash
+curl -X POST http://localhost:3456/calls/<call-id>/speak \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello, how can I help you today?", "voice": "vivian"}'
 ```
 
 ### Start recording
@@ -279,6 +289,7 @@ src/
 ├── ari-connection.ts   # ARI client wrapper — call control, media, bridges, recordings
 ├── call-manager.ts     # In-memory call/bridge state and event emitter
 ├── ws-server.ts        # WebSocket server broadcasting call events
+├── tts-client.ts       # TTS HTTP client (Qwen3-TTS, OpenAI-compatible API)
 ├── types.ts            # TypeScript interfaces (CallRecord, BridgeRecord, etc.)
 └── types/
     └── ari-client.d.ts # Type declarations for ari-client
