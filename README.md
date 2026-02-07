@@ -63,6 +63,7 @@ OPENCLAW_WEBHOOK_URL=http://localhost:18789/voice/webhook
 
 # ASR — speech recognition (optional, omit to disable)
 ASR_URL=ws://192.168.2.198:8100/ws/transcribe
+ASR_LANGUAGE=English    # Lock language (default: English). Use "auto" for auto-detect.
 
 # TTS — text-to-speech (optional, omit to disable; /speak returns 501)
 TTS_URL=http://192.168.2.198:8101
@@ -221,6 +222,31 @@ On connect, the WebSocket sends a `snapshot` message with all active calls. Subs
 ```
 
 Event types: `call.created`, `call.state_changed`, `call.ended`, `call.dtmf`, `call.playback_finished`, `call.playback_stream_started`, `call.playback_stream_finished`, `call.playback_stream_error`, `call.recording_finished`, `call.speak_started`, `call.speak_finished`, `call.speak_error`, `call.transcription`, `call.audio_capture_started`, `call.audio_capture_stopped`, `call.audio_frame`, `bridge.created`, `bridge.destroyed`
+
+#### Transcription events (`call.transcription`)
+
+Real-time speech recognition results from the ASR pipeline. Emitted automatically for inbound calls when `ASR_URL` is configured.
+
+```json
+{
+  "type": "call.transcription",
+  "callId": "uuid",
+  "timestamp": "2025-01-01T00:00:00.000Z",
+  "data": {
+    "text": "Hello, can you hear me?",
+    "is_partial": true,
+    "is_final": false
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `text` | string | Transcribed text for this chunk |
+| `is_partial` | boolean | `true` for streaming chunks (~800ms windows) |
+| `is_final` | boolean | `true` only on flush at call end — accumulate partials during the call |
+
+**Usage pattern:** Collect all `is_partial: true` events during the call to build a running transcript. The `is_final: true` event fires when the call ends (flush), containing only the last buffered audio — it is NOT a full-call transcript. Concatenate all partial texts for the complete conversation.
 
 ## Usage Examples
 
