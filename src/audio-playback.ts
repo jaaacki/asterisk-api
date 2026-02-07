@@ -364,48 +364,50 @@ export class AudioPlayback extends EventEmitter {
   }
 
   private async cleanup(): Promise<void> {
-    const promises: Promise<any>[] = [];
-
-    // Close WebSocket
+    // 1. Close WebSocket first and wait — releases ExternalMedia channel in Asterisk
     if (this.audioWs) {
-      try {
-        this.audioWs.close();
-      } catch (err) {
-        this.log.warn(`[AudioPlayback] Failed to close WebSocket:`, err);
-      }
+      const ws = this.audioWs;
       this.audioWs = undefined;
+
+      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+        await new Promise<void>((resolve) => {
+          const timeout = setTimeout(() => {
+            this.log.warn(`[AudioPlayback] WebSocket close timeout for call ${this.callId}, forcing terminate`);
+            ws.terminate();
+            resolve();
+          }, 2000);
+
+          ws.once("close", () => {
+            clearTimeout(timeout);
+            resolve();
+          });
+          ws.close();
+        });
+      }
     }
 
-    // Remove call channel from bridge (don't destroy the call itself)
+    // 2. Remove call channel from bridge (don't destroy the call itself)
     if (this.bridgeId) {
-      promises.push(
-        this.ari.bridges.removeChannel({ bridgeId: this.bridgeId, channel: this.channelId }).catch((err: any) => {
-          this.log.warn(`[AudioPlayback] Failed to remove call from bridge: ${err.message}`);
-        })
-      );
+      await this.ari.bridges.removeChannel({ bridgeId: this.bridgeId, channel: this.channelId }).catch((err: any) => {
+        this.log.warn(`[AudioPlayback] Failed to remove call from bridge: ${err.message}`);
+      });
     }
 
-    // Destroy bridge
+    // 3. Destroy bridge
     if (this.bridgeId) {
-      promises.push(
-        this.ari.bridges.destroy({ bridgeId: this.bridgeId }).catch((err: any) => {
-          this.log.warn(`[AudioPlayback] Failed to destroy bridge: ${err.message}`);
-        })
-      );
+      await this.ari.bridges.destroy({ bridgeId: this.bridgeId }).catch((err: any) => {
+        this.log.warn(`[AudioPlayback] Failed to destroy bridge: ${err.message}`);
+      });
       this.bridgeId = undefined;
     }
 
-    // Hangup ExternalMedia channel
+    // 4. Hangup ExternalMedia channel (may already be gone after WS close)
     if (this.externalMediaChannelId) {
-      promises.push(
-        this.ari.channels.hangup({ channelId: this.externalMediaChannelId }).catch((err: any) => {
-          this.log.warn(`[AudioPlayback] Failed to hangup ExternalMedia: ${err.message}`);
-        })
-      );
+      await this.ari.channels.hangup({ channelId: this.externalMediaChannelId }).catch((err: any) => {
+        this.log.warn(`[AudioPlayback] Failed to hangup ExternalMedia: ${err.message}`);
+      });
       this.externalMediaChannelId = undefined;
     }
-
-    await Promise.allSettled(promises);
   }
 }
 
